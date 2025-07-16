@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { FiUpload, FiDownload, FiPlay, FiSquare, FiSun, FiMoon, FiHelpCircle, FiUsers, FiTrash2 } from 'react-icons/fi';
+import { FiUpload, FiDownload, FiPlay, FiSquare, FiSun, FiMoon, FiHelpCircle, FiUsers, FiTrash2, FiLock } from 'react-icons/fi';
 import { Tooltip } from 'react-tooltip';
 import { List } from 'react-virtualized';
 import { Chart as ChartJS, ArcElement, Tooltip as ChartTooltip, Legend } from 'chart.js';
@@ -71,6 +71,8 @@ function App() {
   const [fileName, setFileName] = useState('');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+  const [passwordUsers, setPasswordUsers] = useState([]);
+  const [processingPasswords, setProcessingPasswords] = useState(false);
 
   const shouldStop = useRef(false);
   const logEndRef = useRef(null);
@@ -99,25 +101,27 @@ function App() {
 
   // Enhanced API request with retries
   const apiRequest = useCallback(async (config, attempt = 1) => {
-    const maxRetries = 3;
-    const baseDelay = 1000;
-    
-    try {
-      const response = await axios({
-        ...config,
-        timeout: 30000,
-        headers: { ...HEADERS, ...config.headers },
-      });
-      return response;
-    } catch (error) {
-      if (attempt >= maxRetries) throw error;
-      
-      const retryDelay = baseDelay * Math.pow(2, attempt - 1);
-      appendLog(`⚠️ Attempt ${attempt} failed, retrying in ${retryDelay/1000}s...`, 'warning');
-      await new Promise(resolve => setTimeout(resolve, retryDelay));
-      return apiRequest(config, attempt + 1);
-    }
-  }, [appendLog]);
+  const maxRetries = 3;
+  const baseDelay = 1000;
+
+  try {
+    const response = await axios({
+      ...config,
+      url: config.url.startsWith('http') ? config.url : `${BASE_URL}${config.url}`,
+      timeout: 30000,
+      headers: { ...HEADERS, ...config.headers },
+    });
+    return response;
+  } catch (error) {
+    if (attempt >= maxRetries) throw error;
+
+    const retryDelay = baseDelay * Math.pow(2, attempt - 1);
+    appendLog(`⚠️ Attempt ${attempt} failed, retrying in ${retryDelay / 1000}s...`, 'warning');
+    await new Promise(resolve => setTimeout(resolve, retryDelay));
+    return apiRequest(config, attempt + 1);
+  }
+}, [appendLog]);
+
 
   // Connection monitoring with retry and status change notifications
   useEffect(() => {
@@ -282,6 +286,12 @@ function App() {
 
     const csvContent = [headers, sampleRow].join('\n');
     downloadFile(csvContent, 'dhis2_users_template.csv', 'text/csv;charset=utf-8;');
+  };
+
+  // Sample Password CSV download
+  const downloadSamplePasswordCsv = () => {
+    const sampleData = `username,new_password,user_role_ids\n1090002,Obii123@333,"KBkjSGFKSKI,oO6BBApzmHZ"`;
+    downloadFile(sampleData, 'Password_Update_Sample.csv', 'text/csv;charset=utf-8;');
   };
 
   // Export failed users
@@ -511,6 +521,95 @@ function App() {
     appendLog("⏹ Stopping process after current batch completes...", 'warning');
   };
 
+  // Password update functions
+  const handlePasswordCsvImport = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      const rows = text.trim().split('\n').slice(1); // Skip header
+      const users = rows.map(row => {
+        const [username, newPassword, userRoleIds] = row.split(',').map(s => s.trim());
+        const roleObjects = userRoleIds.split(',').map(id => ({ id: id.trim() }));
+        return { username, newPassword, userRoles: roleObjects };
+      });
+      setPasswordUsers(users);
+      appendLog(`✅ Imported ${users.length} users for password update`, 'success');
+    };
+    reader.readAsText(file);
+  };
+
+      const processPasswordUpdates = async () => {
+      if (passwordUsers.length === 0) {
+        appendLog('⚠️ No users imported for password update', 'warning');
+        return;
+      }
+
+      setProcessingPasswords(true);
+      let successCount = 0;
+      let errorCount = 0;
+
+      appendLog(`🚀 Starting password update for ${passwordUsers.length} users`, 'info');
+
+      for (let i = 0; i < passwordUsers.length; i++) {
+        const { username, newPassword } = passwordUsers[i];
+
+        try {
+          // Step 1: Get user ID
+          const queryResponse = await apiRequest({
+            method: 'GET',
+            url: `/users?filter=username:eq:${username}&fields=id`,
+          });
+
+          const userList = queryResponse.data.users || [];
+          if (userList.length === 0) {
+            appendLog(`‼️ User '${username}' not found`, 'warning');
+            errorCount++;
+            continue;
+          }
+
+          const userId = userList[0].id;
+
+          // Step 2: Get full user object
+          const userResponse = await apiRequest({
+            method: 'GET',
+            url: `/users/${userId}`,
+          });
+
+          const fullUserData = userResponse.data;
+
+          if (!fullUserData.userCredentials) fullUserData.userCredentials = {};
+          fullUserData.userCredentials.password = newPassword;
+
+          // Step 3: PUT full user object
+          const updateResponse = await apiRequest({
+            method: 'PUT',
+            url: `/users/${userId}`,
+            data: fullUserData,
+          });
+
+          if ([200, 204].includes(updateResponse.status)) {
+            appendLog(`✅ Password updated successfully for user '${username}'`, 'success');
+            successCount++;
+          } else {
+            appendLog(`🚫 Failed to update user '${username}'. HTTP ${updateResponse.status}`, 'error');
+            errorCount++;
+          }
+        } catch (error) {
+          appendLog(`❌ Error updating '${username}': ${error.response?.data?.message || error.message}`, 'error');
+          errorCount++;
+        }
+
+        setProgress(Math.round(((i + 1) / passwordUsers.length) * 100));
+      }
+
+      appendLog(`🎉 Password update completed. Success: ${successCount}, Errors: ${errorCount}`, errorCount > 0 ? 'warning' : 'success');
+      setProcessingPasswords(false);
+      setProgress(0);
+    };
+
+
   // Export functions
   const exportUsersToCSV = async () => {
     appendLog("📦 Starting DHIS2 user export...", 'info');
@@ -682,13 +781,14 @@ function App() {
       default: return 'text-gray-300';
     }
   };
-  // Add this function near other utility functions (e.g., after `getLogColor`)
-const clearLogs = () => {
-  if (window.confirm('Are you sure you want to clear all activity logs?')) {
-    setLog([]);
-    appendLog('🧹 Cleared activity logs', 'success');
-  }
-};
+
+  const clearLogs = () => {
+    if (window.confirm('Are you sure you want to clear all activity logs?')) {
+      setLog([]);
+      appendLog('🧹 Cleared activity logs', 'success');
+    }
+  };
+
   const rowHeight = 60;
   const listHeight = 400;
 
@@ -835,6 +935,25 @@ const clearLogs = () => {
               Export/Delete Users
             </button>
             <Tooltip id="export-tooltip" />
+            <button
+              className={`px-6 py-3 font-semibold flex items-center text-lg ${
+                activeTab === 'passwords' 
+                  ? theme === 'dark' 
+                    ? 'text-blue-300 border-b-4 border-blue-300' 
+                    : 'text-primary border-b-4 border-primary' 
+                  : theme === 'dark' 
+                    ? 'text-dark-text' 
+                    : 'text-light-text'
+              }`}
+              onClick={() => setActiveTab('passwords')}
+              data-tooltip-id="passwords-tooltip"
+              data-tooltip-content="Manage user passwords"
+              aria-selected={activeTab === 'passwords'}
+            >
+              <FiLock className="mr-2" />
+              Password Management
+            </button>
+            <Tooltip id="passwords-tooltip" />
           </div>
 
           {/* Import Tab */}
@@ -845,10 +964,7 @@ const clearLogs = () => {
                 <div className="flex flex-wrap gap-4">
                   <div className="flex-1 min-w-[300px]">
                     <label className="block mb-2 font-medium" htmlFor="file-upload">Upload File</label>
-                    <div
-                      id="file-upload-desc"
-                      className="text-sm text-gray-500 dark:text-gray-400 mb-1"
-                    >
+                    <div className="text-sm text-gray-500 dark:text-gray-400 mb-1" id="file-upload-desc">
                       Upload a JSON or CSV file containing user data.
                     </div>
                     <div
@@ -1099,62 +1215,62 @@ const clearLogs = () => {
 
               {/* Activity Log */}
               <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="font-medium">Activity Log</h3>
-                <button 
-                  onClick={clearLogs}
-                  className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
-                    log.length === 0
-                      ? 'bg-secondary cursor-not-allowed opacity-50'
-                      : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
-                  } text-white`}
-                  data-tooltip-id="clear-logs-tooltip"
-                  data-tooltip-content="Clear all activity logs"
-                  aria-label="Clear activity logs"
-                  disabled={log.length === 0}
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-medium">Activity Log</h3>
+                  <button 
+                    onClick={clearLogs}
+                    className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
+                      log.length === 0
+                        ? 'bg-secondary cursor-not-allowed opacity-50'
+                        : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
+                    } text-white`}
+                    data-tooltip-id="clear-logs-tooltip"
+                    data-tooltip-content="Clear all activity logs"
+                    aria-label="Clear activity logs"
+                    disabled={log.length === 0}
+                  >
+                    <FiSquare className="mr-1" />
+                    Clear Logs
+                  </button>
+                </div>
+                <div 
+                  className={`h-60 overflow-y-auto p-3 rounded ${
+                    theme === 'dark' ? 'bg-black' : 'bg-gray-200'
+                  }`} 
+                  role="log"
+                  aria-live="polite"
                 >
-                  <FiSquare className="mr-1" />
-                  Clear Logs
-                </button>
+                  {log.length === 0 ? (
+                    <p className={`text-center ${
+                      theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
+                    }`}>
+                      No activity yet
+                    </p>
+                  ) : (
+                    <div className="font-mono text-sm space-y-2">
+                      {log.map((entry, i) => (
+                        <div
+                          key={i}
+                          className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
+                            entry.type === 'error' ? 'border-error' :
+                            entry.type === 'warning' ? 'border-warning' :
+                            entry.type === 'success' ? 'border-success' : 'border-secondary'
+                          }`}
+                        >
+                          <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
+                          <span>
+                            {entry.type === 'success' && '✅ '}
+                            {entry.type === 'error' && '❌ '}
+                            {entry.type === 'warning' && '⚠️ '}
+                            {entry.message}
+                          </span>
+                        </div>
+                      ))}
+                      <div ref={logEndRef} />
+                    </div>
+                  )}
+                </div>
               </div>
-              <div 
-                className={`h-60 overflow-y-auto p-3 rounded ${
-                  theme === 'dark' ? 'bg-black' : 'bg-gray-200'
-                }`} 
-                role="log"
-                aria-live="polite"
-              >
-                {log.length === 0 ? (
-                  <p className={`text-center ${
-                    theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                  }`}>
-                    No activity yet
-                  </p>
-                ) : (
-                  <div className="font-mono text-sm space-y-2">
-                    {log.map((entry, i) => (
-                      <div
-                        key={i}
-                        className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
-                          entry.type === 'error' ? 'border-error' :
-                          entry.type === 'warning' ? 'border-warning' :
-                          entry.type === 'success' ? 'border-success' : 'border-secondary'
-                        }`}
-                      >
-                        <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
-                        <span>
-                          {entry.type === 'success' && '✅ '}
-                          {entry.type === 'error' && '❌ '}
-                          {entry.type === 'warning' && '⚠️ '}
-                          {entry.message}
-                        </span>
-                      </div>
-                    ))}
-                    <div ref={logEndRef} />
-                  </div>
-                )}
-              </div>
-            </div>
             </div>
           )}
 
@@ -1504,6 +1620,152 @@ const clearLogs = () => {
             </div>
           )}
 
+          {/* Password Management Tab */}
+          {activeTab === 'passwords' && (
+            <div className="space-y-6">
+              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                <h2 className="text-lg font-semibold mb-3">Password Management</h2>
+                <div className="flex flex-wrap gap-4">
+                  <div className="flex-1 min-w-[300px]">
+                    <label className="block mb-2 font-medium" htmlFor="password-file-upload">Upload Password CSV</label>
+                    <div className="text-sm text-gray-500 dark:text-gray-400 mb-1" id="password-file-upload-desc">
+                      Upload a CSV file with columns: username, new_password, user_role_ids.
+                    </div>
+                    <div
+                      className={`border rounded-lg p-4 cursor-pointer flex items-center ${
+                        theme === 'dark' ? 'border-gray-600 bg-gray-900 hover:bg-gray-800' : 'border-gray-300 bg-white hover:bg-gray-50'
+                      } transition-all duration-200`}
+                    >
+                      <FiUpload className="mr-2" />
+                      <span>{fileName || 'Choose File or Drag & Drop'}</span>
+                      <input 
+                        id="password-file-upload"
+                        type="file" 
+                        accept=".csv" 
+                        onChange={handlePasswordCsvImport} 
+                        disabled={processingPasswords}
+                        className="hidden" 
+                        aria-label="Upload password CSV file"
+                        aria-describedby="password-file-upload-desc"
+                      />
+                    </div>
+                    {passwordUsers.length > 0 && (
+                      <p className="mt-2 text-sm text-success">
+                        ✅ {passwordUsers.length} users loaded for password update
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-4 flex space-x-2">
+                  <button 
+                    onClick={downloadSamplePasswordCsv}
+                    className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
+                      theme === 'dark' ? 'bg-yellow-700 hover:bg-yellow-600' : 'bg-yellow-600 hover:bg-yellow-500'
+                    } text-white`}
+                    data-tooltip-id="password-sample-tooltip"
+                    data-tooltip-content="Download password update sample CSV"
+                    aria-label="Download password update sample CSV"
+                  >
+                    <FiDownload className="mr-2" />
+                    Sample CSV
+                  </button>
+                  <Tooltip id="password-sample-tooltip" />
+                  <button 
+                    onClick={processPasswordUpdates}
+                    disabled={processingPasswords || passwordUsers.length === 0 || connectionStatus !== 'connected'}
+                    className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
+                      processingPasswords || passwordUsers.length === 0 || connectionStatus !== 'connected'
+                        ? 'bg-secondary cursor-not-allowed opacity-50'
+                        : 'bg-primary hover:bg-primary/90 text-white'
+                    }`}
+                    data-tooltip-id="process-passwords-tooltip"
+                    data-tooltip-content="Process password updates"
+                    aria-label="Process password updates"
+                  >
+                    <FiPlay className="mr-2" />
+                    {processingPasswords ? 'Processing...' : 'Process Updates'}
+                  </button>
+                  <Tooltip id="process-passwords-tooltip" />
+                </div>
+              </div>
+
+              {processingPasswords && (
+                <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden dark:bg-gray-700 relative">
+                  <div 
+                    className="bg-primary h-4 transition-all duration-300 dark:bg-blue-400" 
+                    style={{ width: `${progress}%` }} 
+                    role="progressbar"
+                    aria-valuenow={progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  />
+                  <span className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-white">
+                    {progress}%
+                  </span>
+                </div>
+              )}
+
+              {/* Activity Log */}
+              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-medium">Activity Log</h3>
+                  <button 
+                    onClick={clearLogs}
+                    className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
+                      log.length === 0
+                        ? 'bg-secondary cursor-not-allowed opacity-50'
+                        : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
+                    } text-white`}
+                    data-tooltip-id="clear-logs-tooltip"
+                    data-tooltip-content="Clear all activity logs"
+                    aria-label="Clear activity logs"
+                    disabled={log.length === 0}
+                  >
+                    <FiSquare className="mr-1" />
+                    Clear Logs
+                  </button>
+                </div>
+                <div 
+                  className={`h-60 overflow-y-auto p-3 rounded ${
+                    theme === 'dark' ? 'bg-black' : 'bg-gray-200'
+                  }`} 
+                  role="log"
+                  aria-live="polite"
+                >
+                  {log.length === 0 ? (
+                    <p className={`text-center ${
+                      theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
+                    }`}>
+                      No activity yet
+                    </p>
+                  ) : (
+                    <div className="font-mono text-sm space-y-2">
+                      {log.map((entry, i) => (
+                        <div
+                          key={i}
+                          className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
+                            entry.type === 'error' ? 'border-error' :
+                            entry.type === 'warning' ? 'border-warning' :
+                            entry.type === 'success' ? 'border-success' : 'border-secondary'
+                          }`}
+                        >
+                          <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
+                          <span>
+                            {entry.type === 'success' && '✅ '}
+                            {entry.type === 'error' && '❌ '}
+                            {entry.type === 'warning' && '⚠️ '}
+                            {entry.message}
+                          </span>
+                        </div>
+                      ))}
+                      <div ref={logEndRef} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Help Modal */}
           {showHelp && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" role="dialog" aria-labelledby="help-title">
@@ -1512,7 +1774,7 @@ const clearLogs = () => {
                 <p className="mb-4">
                   The DHIS2 User Manager allows you to import, export, and delete user data in JSON or CSV formats.
                   Upload a file to import users, retry failed imports, or fetch and filter users from the DHIS2 server for export or deletion.
-                  For more details, visit the <a href="https://docs.dhis2.org" className="text-blue-600 hover:underline">DHIS2 documentation</a>.
+                For more details, visit the <a href="https://docs.dhis2.org" className="text-blue-600 hover:underline">DHIS2 documentation</a>.
                 </p>
                 <button 
                   onClick={() => setShowHelp(false)}
