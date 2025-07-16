@@ -1,9 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { FiUpload, FiDownload, FiPlay, FiSquare, FiSun, FiMoon, FiHelpCircle, FiUsers } from 'react-icons/fi';
+import { FiUpload, FiDownload, FiPlay, FiSquare, FiSun, FiMoon, FiHelpCircle, FiUsers, FiTrash2 } from 'react-icons/fi';
 import { Tooltip } from 'react-tooltip';
 import { List } from 'react-virtualized';
+import { Chart as ChartJS, ArcElement, Tooltip as ChartTooltip, Legend } from 'chart.js';
+import { Pie } from 'react-chartjs-2';
 import { convertCSVtoJSON } from './convertCSVtoJSON';
+
+// Register Chart.js components
+ChartJS.register(ArcElement, ChartTooltip, Legend);
 
 // Configure axios defaults
 axios.defaults.timeout = 30000; // 30 second timeout
@@ -44,11 +49,14 @@ const SAMPLE_USERS = [
 function App() {
   // State declarations
   const [users, setUsers] = useState([]);
+  const [failedUsers, setFailedUsers] = useState([]);
   const [log, setLog] = useState([]);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [exportProgress, setExportProgress] = useState(0);
   const [exportedUsers, setExportedUsers] = useState([]);
+  const [selectedUsers, setSelectedUsers] = useState([]); // For deletion
+  const [importStats, setImportStats] = useState({ success: 0, failed: 0 }); // For dashboard
   const [usernameFilter, setUsernameFilter] = useState('');
   const [orgUnitFilter, setOrgUnitFilter] = useState('');
   const [theme, setTheme] = useState('dark');
@@ -57,7 +65,7 @@ function App() {
   const [batchSize, setBatchSize] = useState(2);
   const [connectionStatus, setConnectionStatus] = useState('checking...');
   const [selectedColumns, setSelectedColumns] = useState([
-    'id', 'name', 'username', 'userGroups', 'userRoles', 'lastLogin', 'schoolPath',
+    'id', 'name', 'username', 'userGroups', 'userRoles', 'lastLogin', 'OrgunitPath',
   ]);
   const [showHelp, setShowHelp] = useState(false);
   const [fileName, setFileName] = useState('');
@@ -66,6 +74,7 @@ function App() {
 
   const shouldStop = useRef(false);
   const logEndRef = useRef(null);
+  const prevStatus = useRef('checking...'); // For connection status changes
 
   const usersPerPage = 100;
   const availableColumns = [
@@ -75,8 +84,8 @@ function App() {
     { id: 'userGroups', label: 'Groups' },
     { id: 'userRoles', label: 'Roles' },
     { id: 'lastLogin', label: 'Last Login' },
-    { id: 'schoolPath', label: 'School Path' },
-    { id: 'schoolUID', label: 'School UID' },
+    { id: 'OrgunitPath', label: 'Orgunit Path' },
+    { id: 'OrgunitUID', label: 'Orgunit UID' },
   ];
 
   // Append log with size limit
@@ -110,7 +119,7 @@ function App() {
     }
   }, [appendLog]);
 
-  // Connection monitoring with retry
+  // Connection monitoring with retry and status change notifications
   useEffect(() => {
     let retries = 0;
     const maxRetries = 3;
@@ -118,13 +127,16 @@ function App() {
     const checkConnection = async () => {
       try {
         await apiRequest({ method: 'get', url: `${BASE_URL}/system/ping` });
-        setConnectionStatus('connected');
+        if (connectionStatus !== 'connected') {
+          setConnectionStatus('connected');
+          appendLog('🔌 Server connected', 'success');
+        }
         retries = 0;
       } catch {
         retries++;
-        if (retries >= maxRetries) {
+        if (retries >= maxRetries && connectionStatus !== 'disconnected') {
           setConnectionStatus('disconnected');
-          appendLog('⚠️ Failed to connect to server after retries', 'warning');
+          appendLog('⚠️ Failed to connect to server after retries', 'error');
         } else {
           setTimeout(checkConnection, 1000 * Math.pow(2, retries));
         }
@@ -134,7 +146,7 @@ function App() {
     checkConnection();
     const interval = setInterval(checkConnection, 30000);
     return () => clearInterval(interval);
-  }, [apiRequest]);
+  }, [apiRequest, connectionStatus]);
 
   // Auto-scroll log to bottom
   useEffect(() => {
@@ -272,6 +284,28 @@ function App() {
     downloadFile(csvContent, 'dhis2_users_template.csv', 'text/csv;charset=utf-8;');
   };
 
+  // Export failed users
+  const exportFailedUsers = () => {
+    if (failedUsers.length === 0) {
+      appendLog('⚠️ No failed users to export', 'warning');
+      return;
+    }
+    const content = JSON.stringify(failedUsers, null, 2);
+    downloadFile(content, `failed_users_${new Date().toISOString().slice(0,10)}.json`, 'application/json');
+  };
+
+  // Clear failed users list
+  const clearFailedUsers = () => {
+    if (failedUsers.length === 0) {
+      appendLog('⚠️ No failed users to clear', 'warning');
+      return;
+    }
+    if (window.confirm(`Are you sure you want to clear ${failedUsers.length} failed users?`)) {
+      setFailedUsers([]);
+      appendLog('🧹 Cleared failed users list', 'success');
+    }
+  };
+
   // User validation
   const validateUser = (user) => {
     if (!user.username) return 'Username is required';
@@ -346,15 +380,62 @@ function App() {
     }
   };
 
+  const deleteUser = async (userId, username) => {
+    try {
+      // Clear dependencies to avoid E4055
+      await apiRequest({
+        method: 'put',
+        url: `${BASE_URL}/users/${userId}`,
+        data: {
+          userRoles: [{ id: 'oO6BBApzmHZ' }], // Minimal role
+          organisationUnits: [],
+          dataViewOrganisationUnits: [],
+          teiSearchOrganisationUnits: [],
+          userGroups: [],
+        },
+      });
+      // Delete user
+      await apiRequest({
+        method: 'delete',
+        url: `${BASE_URL}/users/${userId}`,
+      });
+      appendLog(`🗑️ Deleted user: ${username}`, 'success');
+      return true;
+    } catch (error) {
+      appendLog(`❌ Failed to delete ${username}: ${error.message}`, 'error');
+      return false;
+    }
+  };
+
+  const deleteSelectedUsers = async () => {
+    if (selectedUsers.length === 0) {
+      appendLog('⚠️ No users selected for deletion', 'warning');
+      return;
+    }
+    if (window.confirm(`Are you sure you want to delete ${selectedUsers.length} users?`)) {
+      setProcessing(true);
+      let successCount = 0;
+      for (const user of selectedUsers) {
+        const success = await deleteUser(user.id, user.username);
+        if (success) successCount++;
+      }
+      setExportedUsers(prev => prev.filter(u => !selectedUsers.some(su => su.id === u.id)));
+      setSelectedUsers([]);
+      appendLog(`🎉 Deletion completed. Success: ${successCount}, Failed: ${selectedUsers.length - successCount}`, 'success');
+      setProcessing(false);
+    }
+  };
+
   // Process batch with parallel execution
   const processBatch = async (batch) => {
-    const promises = batch.map(async (user) => {
+    const promises = batch.map(async (user, index) => {
       try {
         const id = await getUserId(user.username);
-        return id ? await updateUser(user, id) : await createUser(user);
+        const success = id ? await updateUser(user, id) : await createUser(user);
+        return { user, success };
       } catch (error) {
         appendLog(`❌ Failed to process ${user.username}: ${error.message}`, 'error');
-        return false;
+        return { user, success: false };
       }
     });
     return Promise.all(promises);
@@ -367,8 +448,18 @@ function App() {
     }
   };
 
-  const processUsers = async () => {
-    const invalidUsers = users.filter(user => validateUser(user));
+  const retryFailedImports = () => {
+    if (failedUsers.length === 0) {
+      appendLog('⚠️ No failed users to retry', 'warning');
+      return;
+    }
+    if (window.confirm(`Are you sure you want to retry importing ${failedUsers.length} failed users?`)) {
+      processUsers(failedUsers);
+    }
+  };
+
+  const processUsers = async (retryUsers = users) => {
+    const invalidUsers = retryUsers.filter(user => validateUser(user));
     if (invalidUsers.length) {
       appendLog(`⚠️ Invalid users detected: ${invalidUsers.length}`, 'warning');
       return;
@@ -377,26 +468,36 @@ function App() {
     setProcessing(true);
     shouldStop.current = false;
     setProgress(0);
+    setFailedUsers([]);
     
     let successCount = 0;
     let errorCount = 0;
-    const totalBatches = Math.ceil(users.length / batchSize);
+    const failed = [];
+    const totalBatches = Math.ceil(retryUsers.length / batchSize);
 
-    appendLog(`🚀 Starting import of ${users.length} users (${totalBatches} batches)`, 'info');
+    appendLog(`🚀 Starting import of ${retryUsers.length} users (${totalBatches} batches)`, 'info');
     
-    for (let i = 0; i < users.length && !shouldStop.current; i += batchSize) {
-      const batch = users.slice(i, i + batchSize);
+    for (let i = 0; i < retryUsers.length && !shouldStop.current; i += batchSize) {
+      const batch = retryUsers.slice(i, i + batchSize);
       appendLog(`🔨 Processing batch ${Math.floor(i/batchSize) + 1}/${totalBatches}`, 'info');
       
       const batchResults = await processBatch(batch);
-      successCount += batchResults.filter(Boolean).length;
-      errorCount += batchResults.filter(x => !x).length;
+      batchResults.forEach(({ user, success }, index) => {
+        if (success) {
+          successCount++;
+        } else {
+          errorCount++;
+          failed.push(batch[index]);
+        }
+      });
       
-      setProgress(Math.round(((i + batchSize) / users.length) * 100));
+      setProgress(Math.round(((i + batchSize) / retryUsers.length) * 100));
       
       if (shouldStop.current) break;
     }
     
+    setFailedUsers(failed);
+    setImportStats({ success: successCount, failed: errorCount });
     appendLog(
       `🎉 Process ${shouldStop.current ? 'stopped' : 'completed'}. Success: ${successCount}, Errors: ${errorCount}`,
       errorCount > 0 ? 'warning' : 'success'
@@ -419,7 +520,7 @@ function App() {
     try {
       let seenIds = new Set();
       let usersList = [];
-      let nextUrl = `${BASE_URL}/users.json?fields=id,name,username,userGroups[name],userRoles[name],lastLogin,organisationUnits[ancestors[name],name,id]&paging=true&pageSize=1000`;
+      let nextUrl = `${BASE_URL}/users.json?fields=id,name,username,userGroups[name],userRoles[name],lastLogin,organisationUnits[ancestors[name],name,id]&paging=true&pageSize=10000`;
       let pageCount = 0;
 
       while (nextUrl) {
@@ -444,14 +545,14 @@ function App() {
           const userRoles = user.userRoles?.map(r => r.name).join("; ") || "";
           const lastLogin = user.lastLogin || "";
 
-          let schoolPaths = [];
-          let schoolUIDs = [];
+          let OrgunitPaths = [];
+          let OrgunitUIDs = [];
 
           (user.organisationUnits || []).forEach(ou => {
             if (ou.ancestors?.length === 4) {
               const path = [...ou.ancestors.map(a => a.name), ou.name].join(" > ");
-              schoolPaths.push(path);
-              schoolUIDs.push(ou.id || "");
+              OrgunitPaths.push(path);
+              OrgunitUIDs.push(ou.id || "");
             }
           });
 
@@ -462,8 +563,8 @@ function App() {
             userGroups,
             userRoles,
             lastLogin,
-            schoolPath: schoolPaths.join(" | "),
-            schoolUID: schoolUIDs.join(" | "),
+            OrgunitPath: OrgunitPaths.join(" | "),
+            OrgunitUID: OrgunitUIDs.join(" | "),
           });
         }
 
@@ -524,7 +625,7 @@ function App() {
   const filteredUsers = useMemo(() => {
     return exportedUsers.filter(user =>
       user.username.toLowerCase().includes(usernameFilter.toLowerCase()) &&
-      user.schoolPath.toLowerCase().includes(orgUnitFilter.toLowerCase())
+      user.OrgunitPath.toLowerCase().includes(orgUnitFilter.toLowerCase())
     );
   }, [exportedUsers, usernameFilter, orgUnitFilter]);
 
@@ -540,6 +641,22 @@ function App() {
     setSelectedColumns(prev => 
       prev.includes(columnId) ? prev.filter(id => id !== columnId) : [...prev, columnId]
     );
+  };
+
+  const toggleUserSelection = (user) => {
+    setSelectedUsers(prev => 
+      prev.some(u => u.id === user.id)
+        ? prev.filter(u => u.id !== user.id)
+        : [...prev, user]
+    );
+  };
+
+  const selectAllUsers = () => {
+    if (selectedUsers.length === filteredUsers.length) {
+      setSelectedUsers([]);
+    } else {
+      setSelectedUsers(filteredUsers);
+    }
   };
 
   const sortTable = (key) => {
@@ -565,7 +682,13 @@ function App() {
       default: return 'text-gray-300';
     }
   };
-
+  // Add this function near other utility functions (e.g., after `getLogColor`)
+const clearLogs = () => {
+  if (window.confirm('Are you sure you want to clear all activity logs?')) {
+    setLog([]);
+    appendLog('🧹 Cleared activity logs', 'success');
+  }
+};
   const rowHeight = 60;
   const listHeight = 400;
 
@@ -581,12 +704,21 @@ function App() {
             ? 'bg-gray-800'
             : 'bg-gray-50'
       }`}>
+        <div className="p-3 sm:p-4 border-r text-sm sm:text-base">
+          <input
+            type="checkbox"
+            checked={selectedUsers.some(u => u.id === user.id)}
+            onChange={() => toggleUserSelection(user)}
+            className="rounded"
+            aria-label={`Select user ${user.username}`}
+          />
+        </div>
         {selectedColumns.map(col => (
           <div
             key={col}
             className="p-3 sm:p-4 border-r text-sm sm:text-base break-words"
             style={{
-              minWidth: col === 'schoolPath' || col === 'schoolUID' ? '200px' : '100px',
+              minWidth: col === 'OrgunitPath' || col === 'OrgunitUID' ? '200px' : '100px',
               display: 'table-cell',
             }}
           >
@@ -595,6 +727,17 @@ function App() {
         ))}
       </div>
     );
+  };
+
+  // Chart data for import stats
+  const chartData = {
+    labels: ['Successful Imports', 'Failed Imports'],
+    datasets: [{
+      data: [importStats.success, importStats.failed],
+      backgroundColor: ['#34D399', '#EF4444'],
+      borderColor: ['#34D399', '#EF4444'],
+      borderWidth: 1,
+    }],
   };
 
   return (
@@ -641,7 +784,7 @@ function App() {
             <div className="flex items-center">
               <span className="font-medium mr-2">Server Status:</span>
               <span className={`inline-block w-3 h-3 rounded-full mr-2 ${
-                connectionStatus === 'connected' ? 'bg-success' : 'bg-error'
+                connectionStatus === 'connected' ? 'bg-success animate-pulse' : 'bg-error'
               }`}></span>
               <span>{connectionStatus}</span>
             </div>
@@ -685,11 +828,11 @@ function App() {
               }`}
               onClick={() => setActiveTab('export')}
               data-tooltip-id="export-tooltip"
-              data-tooltip-content="Export users from DHIS2 server"
+              data-tooltip-content="Export or delete users from DHIS2 server"
               aria-selected={activeTab === 'export'}
             >
               <FiDownload className="mr-2" />
-              Export Users
+              Export/Delete Users
             </button>
             <Tooltip id="export-tooltip" />
           </div>
@@ -802,6 +945,38 @@ function App() {
                 </div>
               </div>
 
+              {/* Preview Uploaded Users */}
+              {users.length > 0 && (
+                <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                  <h3 className="font-medium mb-3">Uploaded Users Preview ({users.length})</h3>
+                  <div className="overflow-x-auto">
+                    <table className="table-auto min-w-full border border-gray-400 dark:border-gray-600">
+                      <thead className={`${theme === 'dark' ? 'bg-gray-700 text-white' : 'bg-gray-300'}`}>
+                        <tr>
+                          <th className="p-3 border">Username</th>
+                          <th className="p-3 border">First Name</th>
+                          <th className="p-3 border">Surname</th>
+                          <th className="p-3 border">User Roles</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {users.slice(0, 10).map((user, index) => (
+                          <tr key={index} className={`${index % 2 === 0 ? 'bg-white' : 'bg-gray-100'} dark:bg-gray-800`}>
+                            <td className="p-3 border">{user.username}</td>
+                            <td className="p-3 border">{user.firstName}</td>
+                            <td className="p-3 border">{user.surname}</td>
+                            <td className="p-3 border">{user.userRoles?.map(r => r.id).join(', ')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {users.length > 10 && (
+                    <p className="mt-2 text-sm text-gray-500">Showing first 10 users. Total: {users.length}</p>
+                  )}
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-4">
                 <button 
                   onClick={confirmImport} 
@@ -835,6 +1010,54 @@ function App() {
                   Stop
                 </button>
                 <Tooltip id="stop-import-tooltip" />
+                <button 
+                  onClick={retryFailedImports}
+                  disabled={processing || failedUsers.length === 0 || connectionStatus !== 'connected'}
+                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
+                    processing || failedUsers.length === 0 || connectionStatus !== 'connected'
+                      ? 'bg-secondary cursor-not-allowed opacity-50'
+                      : 'bg-yellow-600 hover:bg-yellow-500 text-white'
+                  }`}
+                  data-tooltip-id="retry-import-tooltip"
+                  data-tooltip-content="Retry failed user imports"
+                  aria-label="Retry failed user imports"
+                >
+                  <FiPlay className="mr-2" />
+                  Retry Failed ({failedUsers.length})
+                </button>
+                <Tooltip id="retry-import-tooltip" />
+                <button 
+                  onClick={exportFailedUsers}
+                  disabled={failedUsers.length === 0}
+                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
+                    failedUsers.length === 0
+                      ? 'bg-secondary cursor-not-allowed opacity-50'
+                      : 'bg-orange-600 hover:bg-orange-500 text-white'
+                  }`}
+                  data-tooltip-id="export-failed-tooltip"
+                  data-tooltip-content="Export failed users to JSON"
+                  aria-label="Export failed users"
+                >
+                  <FiDownload className="mr-2" />
+                  Export Failed ({failedUsers.length})
+                </button>
+                <Tooltip id="export-failed-tooltip" />
+                <button 
+                  onClick={clearFailedUsers}
+                  disabled={failedUsers.length === 0}
+                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
+                    failedUsers.length === 0
+                      ? 'bg-secondary cursor-not-allowed opacity-50'
+                      : 'bg-red-600 hover:bg-red-500 text-white'
+                  }`}
+                  data-tooltip-id="clear-failed-tooltip"
+                  data-tooltip-content="Clear failed users list"
+                  aria-label="Clear failed users"
+                >
+                  <FiSquare className="mr-2" />
+                  Clear Failed ({failedUsers.length})
+                </button>
+                <Tooltip id="clear-failed-tooltip" />
               </div>
 
               {processing && (
@@ -853,55 +1076,93 @@ function App() {
                 </div>
               )}
 
+              {/* Import Statistics Dashboard */}
+              {(importStats.success > 0 || importStats.failed > 0) && (
+                <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                  <h3 className="font-medium mb-3">Import Statistics</h3>
+                  <div className="w-full max-w-md mx-auto h-64 flex items-center justify-center">
+                    <Pie
+                      data={chartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                          legend: { position: 'top' },
+                          title: { display: true, text: 'Import Results' },
+                        },
+                      }}
+                      style={{ maxHeight: '100%', maxWidth: '100%' }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Activity Log */}
               <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <h3 className="font-medium mb-2">Activity Log</h3>
-                <div 
-                  className={`h-60 overflow-y-auto p-3 rounded ${
-                    theme === 'dark' ? 'bg-black' : 'bg-gray-200'
-                  }`} 
-                  role="log"
-                  aria-live="polite"
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="font-medium">Activity Log</h3>
+                <button 
+                  onClick={clearLogs}
+                  className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
+                    log.length === 0
+                      ? 'bg-secondary cursor-not-allowed opacity-50'
+                      : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
+                  } text-white`}
+                  data-tooltip-id="clear-logs-tooltip"
+                  data-tooltip-content="Clear all activity logs"
+                  aria-label="Clear activity logs"
+                  disabled={log.length === 0}
                 >
-                  {log.length === 0 ? (
-                    <p className={`text-center ${
-                      theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                    }`}>
-                      No activity yet
-                    </p>
-                  ) : (
-                    <div className="font-mono text-sm space-y-2">
-                      {log.map((entry, i) => (
-                        <div
-                          key={i}
-                          className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
-                            entry.type === 'error' ? 'border-error' :
-                            entry.type === 'warning' ? 'border-warning' :
-                            entry.type === 'success' ? 'border-success' : 'border-secondary'
-                          }`}
-                        >
-                          <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
-                          <span>
-                            {entry.type === 'success' && '✅ '}
-                            {entry.type === 'error' && '❌ '}
-                            {entry.type === 'warning' && '⚠️ '}
-                            {entry.message}
-                          </span>
-                        </div>
-                      ))}
-                      <div ref={logEndRef} />
-                    </div>
-                  )}
-                </div>
+                  <FiSquare className="mr-1" />
+                  Clear Logs
+                </button>
               </div>
+              <div 
+                className={`h-60 overflow-y-auto p-3 rounded ${
+                  theme === 'dark' ? 'bg-black' : 'bg-gray-200'
+                }`} 
+                role="log"
+                aria-live="polite"
+              >
+                {log.length === 0 ? (
+                  <p className={`text-center ${
+                    theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
+                  }`}>
+                    No activity yet
+                  </p>
+                ) : (
+                  <div className="font-mono text-sm space-y-2">
+                    {log.map((entry, i) => (
+                      <div
+                        key={i}
+                        className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
+                          entry.type === 'error' ? 'border-error' :
+                          entry.type === 'warning' ? 'border-warning' :
+                          entry.type === 'success' ? 'border-success' : 'border-secondary'
+                        }`}
+                      >
+                        <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
+                        <span>
+                          {entry.type === 'success' && '✅ '}
+                          {entry.type === 'error' && '❌ '}
+                          {entry.type === 'warning' && '⚠️ '}
+                          {entry.message}
+                        </span>
+                      </div>
+                    ))}
+                    <div ref={logEndRef} />
+                  </div>
+                )}
+              </div>
+            </div>
             </div>
           )}
 
-          {/* Export Tab */}
+          {/* Export/Delete Tab */}
           {activeTab === 'export' && (
             <div className="space-y-6">
               <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <h2 className="text-lg font-semibold mb-3">Export Users</h2>
+                <h2 className="text-lg font-semibold mb-3">Export/Delete Users</h2>
                 <button 
                   onClick={exportUsersToCSV} 
                   disabled={processing}
@@ -1045,25 +1306,61 @@ function App() {
                           Export as JSON
                         </button>
                         <Tooltip id="export-json-tooltip" />
+                        <button
+                          onClick={deleteSelectedUsers}
+                          disabled={processing || selectedUsers.length === 0 || connectionStatus !== 'connected'}
+                          className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
+                            processing || selectedUsers.length === 0 || connectionStatus !== 'connected'
+                              ? 'bg-secondary cursor-not-allowed opacity-50'
+                              : 'bg-red-600 hover:bg-red-500 text-white'
+                          }`}
+                          data-tooltip-id="delete-users-tooltip"
+                          data-tooltip-content="Delete selected users"
+                          aria-label="Delete selected users"
+                        >
+                          <FiTrash2 className="mr-2" />
+                          Delete Selected ({selectedUsers.length})
+                        </button>
+                        <Tooltip id="delete-users-tooltip" />
                       </div>
                     </div>
                   </div>
 
                   <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
                     <h3 className="font-medium mb-3">User Data ({filteredUsers.length} users)</h3>
-
+                    <button
+                      onClick={selectAllUsers}
+                      className={`mb-4 px-4 py-2 rounded-lg transition-all duration-200 transform hover:scale-105 ${
+                        theme === 'dark' ? 'bg-gray-600 hover:bg-gray-500' : 'bg-gray-200 hover:bg-gray-300'
+                      }`}
+                      data-tooltip-id="select-all-tooltip"
+                      data-tooltip-content={selectedUsers.length === filteredUsers.length ? 'Deselect All' : 'Select All'}
+                      aria-label={selectedUsers.length === filteredUsers.length ? 'Deselect all users' : 'Select all users'}
+                    >
+                      {selectedUsers.length === filteredUsers.length ? 'Deselect All' : 'Select All'}
+                    </button>
+                    <Tooltip id="select-all-tooltip" />
                     <div className="overflow-x-auto">
                       <table className="table-auto min-w-full border border-gray-400 dark:border-gray-600">
                         {/* Table Head */}
                         <thead className={`${theme === 'dark' ? 'bg-gray-700 text-white' : 'bg-gray-300'}`}>
                           <tr>
+                            <th className="p-3 border border-gray-400 dark:border-gray-600 text-left text-sm font-semibold">
+                              <input
+                                type="checkbox"
+                                checked={selectedUsers.length === filteredUsers.length && filteredUsers.length > 0}
+                                onChange={selectAllUsers}
+                                className="rounded"
+                                aria-label="Select all users"
+                              />
+                            </th>
                             {selectedColumns.map(col => (
                               <th
                                 key={col}
                                 className="p-3 border border-gray-400 dark:border-gray-600 text-left text-sm font-semibold whitespace-normal break-words"
                                 style={{
-                                  minWidth: col === 'schoolPath' ? '400px' : '200px',
-                                  maxWidth: col === 'schoolPath' ? '600px' : '300px',
+                                  minWidth: col === 'OrgunitPath' ? '400px' : '200px',
+                                  maxWidth: col === 'OrgunitPath' ? '600px' : '300px',
                                 }}
                                 onClick={() => sortTable(col)}
                               >
@@ -1083,13 +1380,22 @@ function App() {
                               key={index}
                               className={`${index % 2 === 0 ? 'bg-white' : 'bg-gray-100'} dark:bg-gray-800`}
                             >
+                              <td className="p-3 border border-gray-400 dark:border-gray-600 text-sm align-top">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedUsers.some(u => u.id === user.id)}
+                                  onChange={() => toggleUserSelection(user)}
+                                  className="rounded"
+                                  aria-label={`Select user ${user.username}`}
+                                />
+                              </td>
                               {selectedColumns.map(col => (
                                 <td
                                   key={`${index}-${col}`}
                                   className="p-3 border border-gray-400 dark:border-gray-600 text-sm align-top whitespace-pre-wrap break-words"
                                   style={{
-                                    minWidth: col === 'schoolPath' ? '400px' : '200px',
-                                    maxWidth: col === 'schoolPath' ? '800px' : '300px',
+                                    minWidth: col === 'OrgunitPath' ? '400px' : '200px',
+                                    maxWidth: col === 'OrgunitPath' ? '800px' : '300px',
                                   }}
                                 >
                                   {String(user[col] ?? '')}
@@ -1139,7 +1445,24 @@ function App() {
 
               {/* Activity Log */}
               <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <h3 className="font-medium mb-2">Activity Log</h3>
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-medium">Activity Log</h3>
+                  <button 
+                    onClick={clearLogs}
+                    className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
+                      log.length === 0
+                        ? 'bg-secondary cursor-not-allowed opacity-50'
+                        : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
+                    } text-white`}
+                    data-tooltip-id="clear-logs-tooltip"
+                    data-tooltip-content="Clear all activity logs"
+                    aria-label="Clear activity logs"
+                    disabled={log.length === 0}
+                  >
+                    <FiSquare className="mr-1" />
+                    Clear Logs
+                  </button>
+                </div>
                 <div 
                   className={`h-60 overflow-y-auto p-3 rounded ${
                     theme === 'dark' ? 'bg-black' : 'bg-gray-200'
@@ -1187,8 +1510,8 @@ function App() {
               <div className={`p-6 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
                 <h2 id="help-title" className="text-lg font-bold mb-4">Help</h2>
                 <p className="mb-4">
-                  The DHIS2 User Manager allows you to import and export user data in JSON or CSV formats.
-                  Upload a file to import users, or fetch and filter users from the DHIS2 server for export.
+                  The DHIS2 User Manager allows you to import, export, and delete user data in JSON or CSV formats.
+                  Upload a file to import users, retry failed imports, or fetch and filter users from the DHIS2 server for export or deletion.
                   For more details, visit the <a href="https://docs.dhis2.org" className="text-blue-600 hover:underline">DHIS2 documentation</a>.
                 </p>
                 <button 

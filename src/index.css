@@ -1,12 +1,37 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* Remove these lines if not using Tailwind's build process */
+/* @tailwind base; */
+/* @tailwind components; */
+/* @tailwind utilities; */
+
 
 body {
   font-family: 'Inter', sans-serif;
 }
 
-button:focus, input:focus, select:focus {
-  outline: 2px solid #2563EB;
-  outline-offset: 2px;
+button:focus,
+input:focus,
+select:focus,
+[type="checkbox"]:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.5); /* Matches #2563EB */
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.animate-pulse {
+  animation: pulse 1.5s infinite;
+}
+
+.chart-container {
+  max-width: 28rem; /* Matches max-w-md */
+  max-height: 16rem; /* Matches h-64 */
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
