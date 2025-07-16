@@ -391,50 +391,102 @@ function App() {
   };
 
   const deleteUser = async (userId, username) => {
-    try {
-      // Clear dependencies to avoid E4055
-      await apiRequest({
-        method: 'put',
-        url: `${BASE_URL}/users/${userId}`,
-        data: {
-          userRoles: [{ id: 'oO6BBApzmHZ' }], // Minimal role
-          organisationUnits: [],
-          dataViewOrganisationUnits: [],
-          teiSearchOrganisationUnits: [],
-          userGroups: [],
-        },
-      });
-      // Delete user
-      await apiRequest({
-        method: 'delete',
-        url: `${BASE_URL}/users/${userId}`,
-      });
-      appendLog(`🗑️ Deleted user: ${username}`, 'success');
-      return true;
-    } catch (error) {
-      appendLog(`❌ Failed to delete ${username}: ${error.message}`, 'error');
-      return false;
-    }
-  };
+  try {
+    // Step 1: Fetch full user object
+    const userResponse = await apiRequest({
+      method: 'GET',
+      url: `/users/${userId}`,
+    });
 
+    const user = userResponse.data;
+
+    // Step 2: Modify user fields to clear dependencies
+    user.disabled = true;
+    user.userRoles = [{ id: 'oO6BBApzmHZ' }];
+    user.organisationUnits = [];
+    user.dataViewOrganisationUnits = [];
+    user.teiSearchOrganisationUnits = [];
+    user.userGroups = [];
+
+    // Step 3: Update user with cleared dependencies
+    await apiRequest({
+      method: 'PUT',
+      url: `/users/${userId}`,
+      data: user,
+    });
+
+    // Step 4: Wait for server to process changes
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Step 5: Attempt to delete the user with extended timeout
+    await apiRequest({
+      method: 'DELETE',
+      url: `/users/${userId}`,
+      timeout: 60000, // ⏱️ Increase timeout to 60s
+    });
+
+    appendLog(`🗑️ Deleted user: ${username}`, 'success');
+    return true;
+
+  } catch (error) {
+    const isTimeout = error.code === 'ECONNABORTED';
+
+    if (isTimeout) {
+      appendLog(`⌛ Timeout while deleting ${username}, checking if it was deleted...`, 'warning');
+
+      // Step 6: Check if user was deleted
+      try {
+        await apiRequest({
+          method: 'GET',
+          url: `/users/${userId}`,
+        });
+
+        // If we get here, user still exists
+        appendLog(`🔁 User '${username}' still exists after timeout`, 'warning');
+        return false;
+      } catch (verifyError) {
+        if (verifyError.response?.status === 404) {
+          // User no longer exists
+          appendLog(`✅ Confirmed: User '${username}' was deleted`, 'success');
+          return true;
+        }
+      }
+    }
+
+    // Log standard error message
+    const message = error.response?.data?.message || error.message;
+    appendLog(`❌ Failed to delete ${username}: ${message}`, 'error');
+    return false;
+  }
+};
+
+
+
+  // deleteSelectedUsers function
   const deleteSelectedUsers = async () => {
     if (selectedUsers.length === 0) {
       appendLog('⚠️ No users selected for deletion', 'warning');
       return;
     }
+
     if (window.confirm(`Are you sure you want to delete ${selectedUsers.length} users?`)) {
       setProcessing(true);
       let successCount = 0;
+
       for (const user of selectedUsers) {
         const success = await deleteUser(user.id, user.username);
         if (success) successCount++;
       }
-      setExportedUsers(prev => prev.filter(u => !selectedUsers.some(su => su.id === u.id)));
+
+      setExportedUsers(prev =>
+        prev.filter(u => !selectedUsers.some(su => su.id === u.id))
+      );
       setSelectedUsers([]);
       appendLog(`🎉 Deletion completed. Success: ${successCount}, Failed: ${selectedUsers.length - successCount}`, 'success');
       setProcessing(false);
     }
   };
+
 
   // Process batch with parallel execution
   const processBatch = async (batch) => {
