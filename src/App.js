@@ -337,7 +337,7 @@ function App() {
       return null;
     }
   };
-
+// Update user function
   const updateUser = async (user, id) => {
     try {
       const payload = {
@@ -364,7 +364,7 @@ function App() {
       return false;
     }
   };
-
+// createUser function
   const createUser = async (user) => {
     try {
       await apiRequest({
@@ -389,7 +389,7 @@ function App() {
       return false;
     }
   };
-
+// deleteUser function with extended timeout and verification
   const deleteUser = async (userId, username) => {
   try {
     // Step 1: Fetch full user object
