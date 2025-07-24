@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
 import axios from 'axios';
 import { FiUpload, FiDownload, FiPlay, FiSquare, FiSun, FiMoon, FiHelpCircle, FiUsers, FiTrash2, FiLock } from 'react-icons/fi';
 import { Tooltip } from 'react-tooltip';
@@ -10,17 +10,48 @@ import { convertCSVtoJSON } from './convertCSVtoJSON';
 // Register Chart.js components
 ChartJS.register(ArcElement, ChartTooltip, Legend);
 
+// Theme Context
+const ThemeContext = createContext();
+
+const ThemeProvider = ({ children }) => {
+  const [theme, setTheme] = useState(() => {
+    const savedTheme = localStorage.getItem('theme');
+    const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    return savedTheme || (systemPrefersDark ? 'dark' : 'light');
+  });
+
+  const toggleTheme = useCallback(() => {
+    setTheme(prev => {
+      const newTheme = prev === 'light' ? 'dark' : 'light';
+      localStorage.setItem('theme', newTheme);
+      return newTheme;
+    });
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
+
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+};
+
+const useTheme = () => useContext(ThemeContext);
+
 // Configure axios defaults
-axios.defaults.timeout = 30000; // 30 second timeout
-axios.defaults.maxContentLength = 50 * 1024 * 1024; // 50MB
-axios.defaults.maxBodyLength = 50 * 1024 * 1024; // 50MB
+axios.defaults.timeout = 30000;
+axios.defaults.maxContentLength = 50 * 1024 * 1024;
+axios.defaults.maxBodyLength = 50 * 1024 * 1024;
 const BASE_URL = process.env.REACT_APP_BASE_URL || "https://emis.dhis2nigeria.org.ng/dhis/api";
 const HEADERS = {
   'Content-Type': 'application/json',
   'Authorization': `ApiToken ${process.env.REACT_APP_API_TOKEN}`,
 };
 
-// Sample user data for download
+// Sample user data
 const SAMPLE_USERS = [
   {
     firstName: "PVT",
@@ -46,7 +77,76 @@ const SAMPLE_USERS = [
   },
 ];
 
+// Reusable Components
+const ThemedButton = ({
+  children,
+  onClick,
+  icon: Icon,
+  variant = 'primary',
+  className = '',
+  disabled = false,
+  ...props
+}) => {
+  const { theme } = useTheme();
+  
+  const variantClasses = {
+    primary: theme === 'dark' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-600 hover:bg-blue-700',
+    secondary: theme === 'dark' ? 'bg-purple-700 hover:bg-purple-600' : 'bg-purple-600 hover:bg-purple-500',
+    danger: theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500',
+    warning: theme === 'dark' ? 'bg-yellow-700 hover:bg-yellow-600' : 'bg-yellow-600 hover:bg-yellow-500',
+    success: theme === 'dark' ? 'bg-green-700 hover:bg-green-600' : 'bg-green-600 hover:bg-green-500',
+    disabled: 'bg-gray-400 cursor-not-allowed'
+  };
+
+  const currentVariant = disabled ? 'disabled' : variant;
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 text-white ${variantClasses[currentVariant]} ${className}`}
+      {...props}
+    >
+      {Icon && <Icon className="mr-2" />}
+      {children}
+    </button>
+  );
+};
+
+const ThemedCard = ({ children, className = '', ...props }) => {
+  const { theme } = useTheme();
+  return (
+    <div
+      className={`rounded-lg shadow p-6 transition-colors duration-200 ${
+        theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+      } ${className}`}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+};
+
+const ProgressBar = ({ progress }) => {
+  const { theme } = useTheme();
+  return (
+    <div className={`w-full ${theme === 'dark' ? 'bg-gray-700' : 'bg-gray-200'} rounded-full h-4 overflow-hidden`}>
+      <div 
+        className={`${theme === 'dark' ? 'bg-blue-400' : 'bg-blue-600'} h-4 rounded-full transition-all duration-300`}
+        style={{ width: `${progress}%` }}
+        role="progressbar"
+        aria-valuenow={progress}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      />
+    </div>
+  );
+};
+
+// Main App Component
 function App() {
+  const { theme, toggleTheme } = useTheme();
+  
   // State declarations
   const [users, setUsers] = useState([]);
   const [failedUsers, setFailedUsers] = useState([]);
@@ -55,11 +155,10 @@ function App() {
   const [progress, setProgress] = useState(0);
   const [exportProgress, setExportProgress] = useState(0);
   const [exportedUsers, setExportedUsers] = useState([]);
-  const [selectedUsers, setSelectedUsers] = useState([]); // For deletion
-  const [importStats, setImportStats] = useState({ success: 0, failed: 0 }); // For dashboard
+  const [selectedUsers, setSelectedUsers] = useState([]);
+  const [importStats, setImportStats] = useState({ success: 0, failed: 0 });
   const [usernameFilter, setUsernameFilter] = useState('');
   const [orgUnitFilter, setOrgUnitFilter] = useState('');
-  const [theme, setTheme] = useState('dark');
   const [currentPage, setCurrentPage] = useState(1);
   const [activeTab, setActiveTab] = useState('import');
   const [batchSize, setBatchSize] = useState(2);
@@ -76,7 +175,7 @@ function App() {
 
   const shouldStop = useRef(false);
   const logEndRef = useRef(null);
-  const prevStatus = useRef('checking...'); // For connection status changes
+  const prevStatus = useRef('checking...');
 
   const usersPerPage = 100;
   const availableColumns = [
@@ -90,40 +189,39 @@ function App() {
     { id: 'OrgunitUID', label: 'Orgunit UID' },
   ];
 
-  // Append log with size limit
+  // Logging utility
   const appendLog = (message, type = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
     setLog(prevLog => {
       const newLog = [...prevLog, { message, type, timestamp }];
-      return newLog.slice(-100); // Keep last 100 entries
+      return newLog.slice(-100);
     });
   };
 
-  // Enhanced API request with retries
+  // API request with retries
   const apiRequest = useCallback(async (config, attempt = 1) => {
-  const maxRetries = 3;
-  const baseDelay = 1000;
+    const maxRetries = 3;
+    const baseDelay = 1000;
 
-  try {
-    const response = await axios({
-      ...config,
-      url: config.url.startsWith('http') ? config.url : `${BASE_URL}${config.url}`,
-      timeout: 30000,
-      headers: { ...HEADERS, ...config.headers },
-    });
-    return response;
-  } catch (error) {
-    if (attempt >= maxRetries) throw error;
+    try {
+      const response = await axios({
+        ...config,
+        url: config.url.startsWith('http') ? config.url : `${BASE_URL}${config.url}`,
+        timeout: 30000,
+        headers: { ...HEADERS, ...config.headers },
+      });
+      return response;
+    } catch (error) {
+      if (attempt >= maxRetries) throw error;
 
-    const retryDelay = baseDelay * Math.pow(2, attempt - 1);
-    appendLog(`⚠️ Attempt ${attempt} failed, retrying in ${retryDelay / 1000}s...`, 'warning');
-    await new Promise(resolve => setTimeout(resolve, retryDelay));
-    return apiRequest(config, attempt + 1);
-  }
-}, [appendLog]);
+      const retryDelay = baseDelay * Math.pow(2, attempt - 1);
+      appendLog(`⚠️ Attempt ${attempt} failed, retrying in ${retryDelay / 1000}s...`, 'warning');
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      return apiRequest(config, attempt + 1);
+    }
+  }, [appendLog]);
 
-
-  // Connection monitoring with retry and status change notifications
+  // Connection monitoring
   useEffect(() => {
     let retries = 0;
     const maxRetries = 3;
@@ -168,26 +266,41 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [processing, users.length, connectionStatus]);
 
-  // File upload handler with drag-and-drop
-  const handleFileUpload = (e) => {
-    const file = e.target.files?.[0];
+  // File processing
+  const processFile = (file) => {
     if (!file) return;
+
+    const validTypes = ['.json', '.csv'];
+    const maxSize = 10 * 1024 * 1024;
+    const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+
+    if (!validTypes.includes(extension)) {
+      appendLog(`❌ Unsupported file type. Please upload a .json or .csv file.`, 'error');
+      return;
+    }
+    if (file.size > maxSize) {
+      appendLog(`❌ File size exceeds 10MB limit.`, 'error');
+      return;
+    }
+
     setFileName(file.name);
     const reader = new FileReader();
     reader.onloadstart = () => appendLog('⏳ Loading user file...', 'info');
-    reader.onload = event => {
+    reader.onload = (event) => {
       try {
-        if (file.name.endsWith('.csv')) {
-          const convertedUsers = convertCSVtoJSON(event.target.result);
-          if (convertedUsers) {
-            setUsers(convertedUsers);
-            appendLog(`✅ Loaded and converted ${convertedUsers.length} users from CSV`, 'success');
+        const content = event.target.result;
+        let users;
+        if (extension === '.csv') {
+          users = convertCSVtoJSON(content);
+          if (users) {
+            setUsers(users);
+            appendLog(`✅ Loaded and converted ${users.length} users from CSV`, 'success');
           }
         } else {
-          const data = JSON.parse(event.target.result);
-          if (!Array.isArray(data)) throw new Error('File should contain an array of users');
-          setUsers(data);
-          appendLog(`✅ Loaded ${data.length} users from JSON`, 'success');
+          users = JSON.parse(content);
+          if (!Array.isArray(users)) throw new Error('File should contain an array of users');
+          setUsers(users);
+          appendLog(`✅ Loaded ${users.length} users from JSON`, 'success');
         }
       } catch (error) {
         appendLog(`❌ Error parsing file: ${error.message}`, 'error');
@@ -197,47 +310,33 @@ function App() {
     reader.readAsText(file);
   };
 
+  const handleFileUpload = (e) => {
+    const file = e.target.files?.[0];
+    processFile(file);
+  };
+
+  // Drag-and-drop handlers
   const handleDragOver = (e) => {
     e.preventDefault();
-    e.currentTarget.classList.add('border-dashed', 'border-primary');
+    e.currentTarget.classList.add('border-dashed', 'border-blue-500');
+    e.currentTarget.setAttribute('aria-busy', 'true');
   };
 
   const handleDragLeave = (e) => {
-    e.currentTarget.classList.remove('border-dashed', 'border-primary');
+    e.preventDefault();
+    e.currentTarget.classList.remove('border-dashed', 'border-blue-500');
+    e.currentTarget.removeAttribute('aria-busy');
   };
 
   const handleDrop = (e) => {
     e.preventDefault();
-    e.currentTarget.classList.remove('border-dashed', 'border-primary');
+    e.currentTarget.classList.remove('border-dashed', 'border-blue-500');
+    e.currentTarget.removeAttribute('aria-busy');
     const file = e.dataTransfer.files?.[0];
-    if (file) {
-      setFileName(file.name);
-      const reader = new FileReader();
-      reader.onloadstart = () => appendLog('⏳ Loading user file...', 'info');
-      reader.onload = event => {
-        try {
-          if (file.name.endsWith('.csv')) {
-            const convertedUsers = convertCSVtoJSON(event.target.result);
-            if (convertedUsers) {
-              setUsers(convertedUsers);
-              appendLog(`✅ Loaded and converted ${convertedUsers.length} users from CSV`, 'success');
-            }
-          } else {
-            const data = JSON.parse(event.target.result);
-            if (!Array.isArray(data)) throw new Error('File should contain an array of users');
-            setUsers(data);
-            appendLog(`✅ Loaded ${data.length} users from JSON`, 'success');
-          }
-        } catch (error) {
-          appendLog(`❌ Error parsing file: ${error.message}`, 'error');
-        }
-      };
-      reader.onerror = () => appendLog('❌ Failed to read file', 'error');
-      reader.readAsText(file);
-    }
+    processFile(file);
   };
 
-  // Reusable download function
+  // Download utilities
   const downloadFile = (content, filename, mimeType) => {
     try {
       const blob = new Blob([content], { type: mimeType });
@@ -253,12 +352,10 @@ function App() {
     }
   };
 
-  // Sample JSON download
   const downloadSampleJson = () => {
     downloadFile(JSON.stringify(SAMPLE_USERS, null, 2), 'dhis2_users_sample.json', 'application/json');
   };
 
-  // Sample CSV download
   const downloadSampleCSV = () => {
     const headers = [
       'firstName',
@@ -288,13 +385,11 @@ function App() {
     downloadFile(csvContent, 'dhis2_users_template.csv', 'text/csv;charset=utf-8;');
   };
 
-  // Sample Password CSV download
   const downloadSamplePasswordCsv = () => {
     const sampleData = `username,new_password,user_role_ids\n1090002,Obii123@333,"KBkjSGFKSKI,oO6BBApzmHZ"`;
     downloadFile(sampleData, 'Password_Update_Sample.csv', 'text/csv;charset=utf-8;');
   };
 
-  // Export failed users
   const exportFailedUsers = () => {
     if (failedUsers.length === 0) {
       appendLog('⚠️ No failed users to export', 'warning');
@@ -304,7 +399,6 @@ function App() {
     downloadFile(content, `failed_users_${new Date().toISOString().slice(0,10)}.json`, 'application/json');
   };
 
-  // Clear failed users list
   const clearFailedUsers = () => {
     if (failedUsers.length === 0) {
       appendLog('⚠️ No failed users to clear', 'warning');
@@ -337,7 +431,7 @@ function App() {
       return null;
     }
   };
-// Update user function
+
   const updateUser = async (user, id) => {
     try {
       const payload = {
@@ -364,7 +458,7 @@ function App() {
       return false;
     }
   };
-// createUser function
+
   const createUser = async (user) => {
     try {
       await apiRequest({
@@ -389,80 +483,66 @@ function App() {
       return false;
     }
   };
-// deleteUser function with extended timeout and verification
+
   const deleteUser = async (userId, username) => {
-  try {
-    // Step 1: Fetch full user object
-    const userResponse = await apiRequest({
-      method: 'GET',
-      url: `/users/${userId}`,
-    });
+    try {
+      const userResponse = await apiRequest({
+        method: 'GET',
+        url: `/users/${userId}`,
+      });
 
-    const user = userResponse.data;
+      const user = userResponse.data;
+      user.disabled = true;
+      user.userRoles = [{ id: 'oO6BBApzmHZ' }];
+      user.organisationUnits = [];
+      user.dataViewOrganisationUnits = [];
+      user.teiSearchOrganisationUnits = [];
+      user.userGroups = [];
 
-    // Step 2: Modify user fields to clear dependencies
-    user.disabled = true;
-    user.userRoles = [{ id: 'oO6BBApzmHZ' }];
-    user.organisationUnits = [];
-    user.dataViewOrganisationUnits = [];
-    user.teiSearchOrganisationUnits = [];
-    user.userGroups = [];
+      await apiRequest({
+        method: 'PUT',
+        url: `/users/${userId}`,
+        data: user,
+      });
 
-    // Step 3: Update user with cleared dependencies
-    await apiRequest({
-      method: 'PUT',
-      url: `/users/${userId}`,
-      data: user,
-    });
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Step 4: Wait for server to process changes
-    await new Promise(resolve => setTimeout(resolve, 1000));
+      await apiRequest({
+        method: 'DELETE',
+        url: `/users/${userId}`,
+        timeout: 60000,
+      });
 
-    // Step 5: Attempt to delete the user with extended timeout
-    await apiRequest({
-      method: 'DELETE',
-      url: `/users/${userId}`,
-      timeout: 60000, // ⏱️ Increase timeout to 60s
-    });
+      appendLog(`🗑️ Deleted user: ${username}`, 'success');
+      return true;
 
-    appendLog(`🗑️ Deleted user: ${username}`, 'success');
-    return true;
+    } catch (error) {
+      const isTimeout = error.code === 'ECONNABORTED';
 
-  } catch (error) {
-    const isTimeout = error.code === 'ECONNABORTED';
+      if (isTimeout) {
+        appendLog(`⌛ Timeout while deleting ${username}, checking if it was deleted...`, 'warning');
 
-    if (isTimeout) {
-      appendLog(`⌛ Timeout while deleting ${username}, checking if it was deleted...`, 'warning');
-
-      // Step 6: Check if user was deleted
-      try {
-        await apiRequest({
-          method: 'GET',
-          url: `/users/${userId}`,
-        });
-
-        // If we get here, user still exists
-        appendLog(`🔁 User '${username}' still exists after timeout`, 'warning');
-        return false;
-      } catch (verifyError) {
-        if (verifyError.response?.status === 404) {
-          // User no longer exists
-          appendLog(`✅ Confirmed: User '${username}' was deleted`, 'success');
-          return true;
+        try {
+          await apiRequest({
+            method: 'GET',
+            url: `/users/${userId}`,
+          });
+          appendLog(`🔁 User '${username}' still exists after timeout`, 'warning');
+          return false;
+        } catch (verifyError) {
+          if (verifyError.response?.status === 404) {
+            appendLog(`✅ Confirmed: User '${username}' was deleted`, 'success');
+            return true;
+          }
         }
       }
+
+      const message = error.response?.data?.message || error.message;
+      appendLog(`❌ Failed to delete ${username}: ${message}`, 'error');
+      return false;
     }
+  };
 
-    // Log standard error message
-    const message = error.response?.data?.message || error.message;
-    appendLog(`❌ Failed to delete ${username}: ${message}`, 'error');
-    return false;
-  }
-};
-
-
-
-  // deleteSelectedUsers function
   const deleteSelectedUsers = async () => {
     if (selectedUsers.length === 0) {
       appendLog('⚠️ No users selected for deletion', 'warning');
@@ -486,7 +566,6 @@ function App() {
       setProcessing(false);
     }
   };
-
 
   // Process batch with parallel execution
   const processBatch = async (batch) => {
@@ -580,7 +659,7 @@ function App() {
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target.result;
-      const rows = text.trim().split('\n').slice(1); // Skip header
+      const rows = text.trim().split('\n').slice(1);
       const users = rows.map(row => {
         const [username, newPassword, userRoleIds] = row.split(',').map(s => s.trim());
         const roleObjects = userRoleIds.split(',').map(id => ({ id: id.trim() }));
@@ -592,75 +671,69 @@ function App() {
     reader.readAsText(file);
   };
 
-      const processPasswordUpdates = async () => {
-      if (passwordUsers.length === 0) {
-        appendLog('⚠️ No users imported for password update', 'warning');
-        return;
-      }
+  const processPasswordUpdates = async () => {
+    if (passwordUsers.length === 0) {
+      appendLog('⚠️ No users imported for password update', 'warning');
+      return;
+    }
 
-      setProcessingPasswords(true);
-      let successCount = 0;
-      let errorCount = 0;
+    setProcessingPasswords(true);
+    let successCount = 0;
+    let errorCount = 0;
 
-      appendLog(`🚀 Starting password update for ${passwordUsers.length} users`, 'info');
+    appendLog(`🚀 Starting password update for ${passwordUsers.length} users`, 'info');
 
-      for (let i = 0; i < passwordUsers.length; i++) {
-        const { username, newPassword } = passwordUsers[i];
+    for (let i = 0; i < passwordUsers.length; i++) {
+      const { username, newPassword } = passwordUsers[i];
 
-        try {
-          // Step 1: Get user ID
-          const queryResponse = await apiRequest({
-            method: 'GET',
-            url: `/users?filter=username:eq:${username}&fields=id`,
-          });
+      try {
+        const queryResponse = await apiRequest({
+          method: 'GET',
+          url: `/users?filter=username:eq:${username}&fields=id`,
+        });
 
-          const userList = queryResponse.data.users || [];
-          if (userList.length === 0) {
-            appendLog(`‼️ User '${username}' not found`, 'warning');
-            errorCount++;
-            continue;
-          }
-
-          const userId = userList[0].id;
-
-          // Step 2: Get full user object
-          const userResponse = await apiRequest({
-            method: 'GET',
-            url: `/users/${userId}`,
-          });
-
-          const fullUserData = userResponse.data;
-
-          if (!fullUserData.userCredentials) fullUserData.userCredentials = {};
-          fullUserData.userCredentials.password = newPassword;
-
-          // Step 3: PUT full user object
-          const updateResponse = await apiRequest({
-            method: 'PUT',
-            url: `/users/${userId}`,
-            data: fullUserData,
-          });
-
-          if ([200, 204].includes(updateResponse.status)) {
-            appendLog(`✅ Password updated successfully for user '${username}'`, 'success');
-            successCount++;
-          } else {
-            appendLog(`🚫 Failed to update user '${username}'. HTTP ${updateResponse.status}`, 'error');
-            errorCount++;
-          }
-        } catch (error) {
-          appendLog(`❌ Error updating '${username}': ${error.response?.data?.message || error.message}`, 'error');
+        const userList = queryResponse.data.users || [];
+        if (userList.length === 0) {
+          appendLog(`‼️ User '${username}' not found`, 'warning');
           errorCount++;
+          continue;
         }
 
-        setProgress(Math.round(((i + 1) / passwordUsers.length) * 100));
+        const userId = userList[0].id;
+        const userResponse = await apiRequest({
+          method: 'GET',
+          url: `/users/${userId}`,
+        });
+
+        const fullUserData = userResponse.data;
+        if (!fullUserData.userCredentials) fullUserData.userCredentials = {};
+        fullUserData.userCredentials.password = newPassword;
+
+        const updateResponse = await apiRequest({
+          method: 'PUT',
+          url: `/users/${userId}`,
+          data: fullUserData,
+        });
+
+        if ([200, 204].includes(updateResponse.status)) {
+          appendLog(`✅ Password updated successfully for user '${username}'`, 'success');
+          successCount++;
+        } else {
+          appendLog(`🚫 Failed to update user '${username}'. HTTP ${updateResponse.status}`, 'error');
+          errorCount++;
+        }
+      } catch (error) {
+        appendLog(`❌ Error updating '${username}': ${error.response?.data?.message || error.message}`, 'error');
+        errorCount++;
       }
 
-      appendLog(`🎉 Password update completed. Success: ${successCount}, Errors: ${errorCount}`, errorCount > 0 ? 'warning' : 'success');
-      setProcessingPasswords(false);
-      setProgress(0);
-    };
+      setProgress(Math.round(((i + 1) / passwordUsers.length) * 100));
+    }
 
+    appendLog(`🎉 Password update completed. Success: ${successCount}, Errors: ${errorCount}`, errorCount > 0 ? 'warning' : 'success');
+    setProcessingPasswords(false);
+    setProgress(0);
+  };
 
   // Export functions
   const exportUsersToCSV = async () => {
@@ -671,7 +744,7 @@ function App() {
     try {
       let seenIds = new Set();
       let usersList = [];
-      let nextUrl = `${BASE_URL}/users.json?fields=id,name,username,userGroups[name],userRoles[name],lastLogin,organisationUnits[ancestors[name],name,id]&paging=true&pageSize=10000`;
+      let nextUrl = `${BASE_URL}/users.json?fields=id,name,username,userGroups[name],userRoles[name],lastLogin,organisationUnits[ancestors[name],name,id]&paging=true&pageSize=5000`;
       let pageCount = 0;
 
       while (nextUrl) {
@@ -771,8 +844,6 @@ function App() {
   };
 
   // UI helpers
-  const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light');
-
   const filteredUsers = useMemo(() => {
     return exportedUsers.filter(user =>
       user.username.toLowerCase().includes(usernameFilter.toLowerCase()) &&
@@ -827,10 +898,10 @@ function App() {
 
   const getLogColor = (type) => {
     switch (type) {
-      case 'error': return 'text-error';
-      case 'warning': return 'text-warning';
-      case 'success': return 'text-success';
-      default: return 'text-gray-300';
+      case 'error': return 'text-red-500 dark:text-red-400';
+      case 'warning': return 'text-yellow-500 dark:text-yellow-400';
+      case 'success': return 'text-green-500 dark:text-green-400';
+      default: return 'text-gray-500 dark:text-gray-400';
     }
   };
 
@@ -839,46 +910,6 @@ function App() {
       setLog([]);
       appendLog('🧹 Cleared activity logs', 'success');
     }
-  };
-
-  const rowHeight = 60;
-  const listHeight = 400;
-
-  const renderRow = ({ index, key, style }) => {
-    const user = currentUsers[index];
-    return (
-      <div key={key} style={style} className={`flex items-center border-b ${
-        index % 2 === 0
-          ? theme === 'dark'
-            ? 'bg-dark-card'
-            : 'bg-light-card'
-          : theme === 'dark'
-            ? 'bg-gray-800'
-            : 'bg-gray-50'
-      }`}>
-        <div className="p-3 sm:p-4 border-r text-sm sm:text-base">
-          <input
-            type="checkbox"
-            checked={selectedUsers.some(u => u.id === user.id)}
-            onChange={() => toggleUserSelection(user)}
-            className="rounded"
-            aria-label={`Select user ${user.username}`}
-          />
-        </div>
-        {selectedColumns.map(col => (
-          <div
-            key={col}
-            className="p-3 sm:p-4 border-r text-sm sm:text-base break-words"
-            style={{
-              minWidth: col === 'OrgunitPath' || col === 'OrgunitUID' ? '200px' : '100px',
-              display: 'table-cell',
-            }}
-          >
-            {user[col]}
-          </div>
-        ))}
-      </div>
-    );
   };
 
   // Chart data for import stats
@@ -893,71 +924,72 @@ function App() {
   };
 
   return (
-    <div className={`min-h-screen p-4 ${theme === 'dark' ? 'bg-dark-bg text-dark-text' : 'bg-light-bg text-light-text'}`}>
-      <div className="max-w-7xl mx-auto rounded-2xl shadow-lg overflow-hidden">
+    <div className={`min-h-screen bg-theme-${theme}-bg text-theme-${theme}-text font-sans transition-colors duration-200`}>
+      <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
         {/* Header */}
-        <div className={`p-6 ${theme === 'dark' ? 'bg-dark-card' : 'bg-primary'} text-white`}>
+        <header className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg p-4 fixed top-0 left-0 right-0 z-50">
           <div className="flex justify-between items-center">
             <div className="flex items-center space-x-3">
-              <FiUsers className="text-2xl" />
+              <FiUsers className="text-2xl text-white" />
               <h1 className="text-2xl font-bold">DHIS2 User Manager</h1>
             </div>
             <div className="flex space-x-4">
-              <button 
-                onClick={toggleTheme} 
-                className="flex items-center space-x-1 bg-black bg-opacity-20 px-3 py-1 rounded hover:bg-opacity-30 transition-all duration-200 transform hover:scale-105"
+              <ThemedButton 
+                onClick={toggleTheme}
+                variant="secondary"
                 data-tooltip-id="theme-tooltip"
                 data-tooltip-content={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-                aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
               >
                 {theme === 'light' ? <FiMoon /> : <FiSun />}
-                <span>{theme === 'light' ? 'Dark' : 'Light'} Mode</span>
-              </button>
-              <Tooltip id="theme-tooltip" />
-              <button 
+                <span>{theme === 'light' ? 'Dark' : 'Light'}</span>
+              </ThemedButton>
+              
+              <ThemedButton 
                 onClick={() => setShowHelp(true)}
-                className="flex items-center space-x-1 bg-black bg-opacity-20 px-3 py-1 rounded hover:bg-opacity-30 transition-all duration-200 transform hover:scale-105"
+                variant="secondary"
                 data-tooltip-id="help-tooltip"
                 data-tooltip-content="Open help documentation"
-                aria-label="Open help"
               >
                 <FiHelpCircle />
                 <span>Help</span>
-              </button>
-              <Tooltip id="help-tooltip" />
+              </ThemedButton>
             </div>
           </div>
-        </div>
+        </header>
 
-        {/* Main Content */}
-        <div className={`p-6 ${theme === 'dark' ? 'bg-dark-card' : 'bg-light-card'}`}>
+        {/* Main Content */}<br /><br />
+        <main className="space-y-6">
           {/* Connection Status */}
-          <div className="mb-4 p-2 rounded-md bg-blue-50 border border-blue-200 dark:bg-gray-800 dark:border-gray-700">
+          <ThemedCard className="mb-4">
             <div className="flex items-center">
               <span className="font-medium mr-2">Server Status:</span>
               <span className={`inline-block w-3 h-3 rounded-full mr-2 ${
-                connectionStatus === 'connected' ? 'bg-success animate-pulse' : 'bg-error'
+                connectionStatus === 'connected' ? 'bg-green-500 animate-pulse' : 'bg-red-500'
               }`}></span>
               <span>{connectionStatus}</span>
             </div>
             {connectionStatus === 'disconnected' && (
-              <p className="mt-1 text-sm text-error">
+              <p className={`mt-2 text-sm ${
+                theme === 'dark' ? 'text-red-400' : 'text-red-500'
+              }`}>
                 Connection issues detected. Some operations may fail.
               </p>
             )}
-          </div>
+          </ThemedCard>
 
           {/* Tabs */}
-          <div className="flex border-b mb-6">
+          <div className={`flex border-b ${
+            theme === 'dark' ? 'border-gray-700' : 'border-gray-200'
+          }`}>
             <button
               className={`px-6 py-3 font-semibold flex items-center text-lg ${
                 activeTab === 'import' 
                   ? theme === 'dark' 
-                    ? 'text-blue-300 border-b-4 border-blue-300' 
-                    : 'text-primary border-b-4 border-primary' 
+                    ? 'text-blue-400 border-b-2 border-blue-400' 
+                    : 'text-blue-600 border-b-2 border-blue-600'
                   : theme === 'dark' 
-                    ? 'text-dark-text' 
-                    : 'text-light-text'
+                    ? 'text-gray-400 hover:text-gray-300' 
+                    : 'text-gray-600 hover:text-gray-800'
               }`}
               onClick={() => setActiveTab('import')}
               data-tooltip-id="import-tooltip"
@@ -972,11 +1004,11 @@ function App() {
               className={`px-6 py-3 font-semibold flex items-center text-lg ${
                 activeTab === 'export' 
                   ? theme === 'dark' 
-                    ? 'text-blue-300 border-b-4 border-blue-300' 
-                    : 'text-primary border-b-4 border-primary' 
+                    ? 'text-blue-400 border-b-2 border-blue-400' 
+                    : 'text-blue-600 border-b-2 border-blue-600'
                   : theme === 'dark' 
-                    ? 'text-dark-text' 
-                    : 'text-light-text'
+                    ? 'text-gray-400 hover:text-gray-300' 
+                    : 'text-gray-600 hover:text-gray-800'
               }`}
               onClick={() => setActiveTab('export')}
               data-tooltip-id="export-tooltip"
@@ -991,11 +1023,11 @@ function App() {
               className={`px-6 py-3 font-semibold flex items-center text-lg ${
                 activeTab === 'passwords' 
                   ? theme === 'dark' 
-                    ? 'text-blue-300 border-b-4 border-blue-300' 
-                    : 'text-primary border-b-4 border-primary' 
+                    ? 'text-blue-400 border-b-2 border-blue-400' 
+                    : 'text-blue-600 border-b-2 border-blue-600'
                   : theme === 'dark' 
-                    ? 'text-dark-text' 
-                    : 'text-light-text'
+                    ? 'text-gray-400 hover:text-gray-300' 
+                    : 'text-gray-600 hover:text-gray-800'
               }`}
               onClick={() => setActiveTab('passwords')}
               data-tooltip-id="passwords-tooltip"
@@ -1009,380 +1041,302 @@ function App() {
           </div>
 
           {/* Import Tab */}
-          {activeTab === 'import' && (
-            <div className="space-y-6">
-              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <h2 className="text-lg font-semibold mb-3">Import Users</h2>
-                <div className="flex flex-wrap gap-4">
-                  <div className="flex-1 min-w-[300px]">
-                    <label className="block mb-2 font-medium" htmlFor="file-upload">Upload File</label>
-                    <div className="text-sm text-gray-500 dark:text-gray-400 mb-1" id="file-upload-desc">
-                      Upload a JSON or CSV file containing user data.
-                    </div>
-                    <div
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                      onDrop={handleDrop}
-                      className={`flex-1 border rounded-lg p-4 cursor-pointer flex items-center ${
-                        theme === 'dark' ? 'border-gray-600 bg-gray-900 hover:bg-gray-800' : 'border-gray-300 bg-white hover:bg-gray-50'
-                      } transition-all duration-200`}
-                    >
-                      <FiUpload className="mr-2" />
-                      <span>{fileName || 'Choose File or Drag & Drop'}</span>
-                      <input 
-                        id="file-upload"
-                        type="file" 
-                        accept=".json,.csv" 
-                        onChange={handleFileUpload} 
-                        disabled={processing}
-                        className="hidden" 
-                        aria-label="Upload JSON or CSV file"
-                        aria-describedby="file-upload-desc"
-                      />
-                    </div>
-                    {users.length > 0 && (
-                      <p className="mt-2 text-sm text-success">
-                        ✅ {users.length} users loaded
-                      </p>
-                    )}
-                  </div>
+{activeTab === 'import' && (
+  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <ThemedCard>
+      <h2 className="text-xl font-semibold mb-4">Import Users</h2>
+      <div className="space-y-4">
+        <div>
+          <label className="block mb-2 font-medium" htmlFor="file-upload">Upload File</label>
+          <div className="text-sm text-gray-500 dark:text-gray-400 mb-2" id="file-upload-desc">
+            Upload a JSON or CSV file containing user data.
+          </div>
+          <label
+            htmlFor="file-upload"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`border-2 rounded-lg p-6 text-center cursor-pointer block ${
+              theme === 'dark' ? 'border-gray-700 bg-gray-900 hover:bg-gray-800' : 'border-gray-300 bg-white hover:bg-gray-50'
+            } transition-all duration-200`}
+          >
+            <FiUpload className="mx-auto mb-2 text-2xl" />
+            <span>{fileName || 'Choose File or Drag & Drop'}</span>
+          </label>
+          <input 
+            id="file-upload"
+            type="file" 
+            accept=".json,.csv" 
+            onChange={handleFileUpload} 
+            disabled={processing}
+            className="hidden" 
+            aria-label="Upload JSON or CSV file"
+            aria-describedby="file-upload-desc"
+          />
+          {users.length > 0 && (
+            <p className="mt-2 text-sm text-green-600 dark:text-green-400">
+              ✅ {users.length} users loaded
+            </p>
+          )}
+        </div>
 
-                  <div className="flex-1 min-w-[300px]">
-                    <label className="block mb-2 font-medium" htmlFor="batch-size">Batch Settings</label>
-                    <select
-                      id="batch-size"
-                      value={batchSize}
-                      onChange={(e) => setBatchSize(Number(e.target.value))}
-                      className={`w-full border rounded-lg p-2 ${
-                        theme === 'dark' ? 'bg-gray-900 border-gray-600' : 'bg-white border-gray-300'
-                      }`}
-                      aria-label="Select batch size for user import"
-                    >
-                      {[1, 2, 5, 10].map(size => (
-                        <option key={size} value={size}>{size} users/batch</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div className="mt-4 flex space-x-2">
-                  <button 
-                    onClick={() => {
-                      if (users.length > 0) {
-                        downloadFile(JSON.stringify(users, null, 2), 'converted_users.json', 'application/json');
-                      } else {
-                        appendLog('⚠️ No users loaded to convert', 'warning');
-                      }
-                    }}
-                    className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                      theme === 'dark' ? 'bg-purple-700 hover:bg-purple-600' : 'bg-purple-600 hover:bg-purple-500'
-                    } text-white`}
-                    data-tooltip-id="convert-tooltip"
-                    data-tooltip-content="Convert loaded users to JSON"
-                    aria-label="Convert loaded users to JSON"
-                  >
-                    <FiDownload className="mr-2" />
-                    Convert to JSON
-                  </button>
-                  <Tooltip id="convert-tooltip" />
-                  <button 
-                    onClick={downloadSampleJson}
-                    className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                      theme === 'dark' ? 'bg-purple-700 hover:bg-purple-600' : 'bg-purple-600 hover:bg-purple-500'
-                    } text-white`}
-                    data-tooltip-id="json-sample-tooltip"
-                    data-tooltip-content="Download JSON sample"
-                    aria-label="Download JSON sample"
-                  >
-                    <FiDownload className="mr-2" />
-                    JSON
-                  </button>
-                  <Tooltip id="json-sample-tooltip" />
-                  <button 
-                    onClick={downloadSampleCSV}
-                    className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                      theme === 'dark' ? 'bg-blue-700 hover:bg-blue-600' : 'bg-blue-600 hover:bg-blue-500'
-                    } text-white`}
-                    data-tooltip-id="csv-template-tooltip"
-                    data-tooltip-content="Download CSV template"
-                    aria-label="Download CSV template"
-                  >
-                    <FiDownload className="mr-2" />
-                    CSV
-                  </button>
-                  <Tooltip id="csv-template-tooltip" />
-                </div>
-              </div>
+        <div>
+          <label className="block mb-2 font-medium" htmlFor="batch-size">Batch Settings</label>
+          <select
+            id="batch-size"
+            value={batchSize}
+            onChange={(e) => setBatchSize(Number(e.target.value))}
+            className={`w-full p-2 rounded border ${
+              theme === 'dark' ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'
+            } focus:outline-none focus:ring-2 focus:ring-blue-500`}
+            aria-label="Select batch size for user import"
+          >
+            {[1, 2, 5, 10].map(size => (
+              <option key={size} value={size}>{size} users/batch</option>
+            ))}
+          </select>
+        </div>
 
-              {/* Preview Uploaded Users */}
-              {users.length > 0 && (
-                <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                  <h3 className="font-medium mb-3">Uploaded Users Preview ({users.length})</h3>
-                  <div className="overflow-x-auto">
-                    <table className="table-auto min-w-full border border-gray-400 dark:border-gray-600">
-                      <thead className={`${theme === 'dark' ? 'bg-gray-700 text-white' : 'bg-gray-300'}`}>
-                        <tr>
-                          <th className="p-3 border">Username</th>
-                          <th className="p-3 border">First Name</th>
-                          <th className="p-3 border">Surname</th>
-                          <th className="p-3 border">User Roles</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {users.slice(0, 10).map((user, index) => (
-                          <tr key={index} className={`${index % 2 === 0 ? 'bg-white' : 'bg-gray-100'} dark:bg-gray-800`}>
-                            <td className="p-3 border">{user.username}</td>
-                            <td className="p-3 border">{user.firstName}</td>
-                            <td className="p-3 border">{user.surname}</td>
-                            <td className="p-3 border">{user.userRoles?.map(r => r.id).join(', ')}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {users.length > 10 && (
-                    <p className="mt-2 text-sm text-gray-500">Showing first 10 users. Total: {users.length}</p>
-                  )}
-                </div>
-              )}
+        <div className="flex flex-wrap gap-3">
+          <ThemedButton 
+            onClick={() => {
+              if (users.length > 0) {
+                downloadFile(JSON.stringify(users, null, 2), 'converted_users.json', 'application/json');
+              } else {
+                appendLog('⚠️ No users loaded to convert', 'warning');
+              }
+            }}
+            variant="secondary"
+            data-tooltip-id="convert-tooltip"
+            data-tooltip-content="Convert loaded users to JSON"
+          >
+            <FiDownload className="mr-2" />
+            Convert to JSON
+          </ThemedButton>
+          <Tooltip id="convert-tooltip" />
+          <ThemedButton 
+            onClick={downloadSampleJson}
+            variant="secondary"
+            data-tooltip-id="json-sample-tooltip"
+            data-tooltip-content="Download JSON sample"
+          >
+            <FiDownload className="mr-2" />
+            JSON
+          </ThemedButton>
+          <Tooltip id="json-sample-tooltip" />
+          <ThemedButton 
+            onClick={downloadSampleCSV}
+            variant="primary"
+            data-tooltip-id="csv-template-tooltip"
+            data-tooltip-content="Download CSV template"
+          >
+            <FiDownload className="mr-2" />
+            CSV
+          </ThemedButton>
+          <Tooltip id="csv-template-tooltip" />
+        </div>
+      </div>
+    </ThemedCard>
 
-              <div className="flex flex-wrap gap-4">
-                <button 
-                  onClick={confirmImport} 
-                  disabled={processing || users.length === 0 || connectionStatus !== 'connected'}
-                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                    processing || users.length === 0 || connectionStatus !== 'connected'
-                      ? 'bg-secondary cursor-not-allowed opacity-50'
-                      : 'bg-primary hover:bg-primary/90 text-white'
-                  }`}
-                  data-tooltip-id="start-import-tooltip"
-                  data-tooltip-content="Start importing users"
-                  aria-label="Start user import"
-                >
-                  <FiPlay className="mr-2" />
-                  Start Import
-                </button>
-                <Tooltip id="start-import-tooltip" />
-                <button 
-                  onClick={stopProcessing} 
-                  disabled={!processing}
-                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                    !processing 
-                      ? 'bg-secondary cursor-not-allowed opacity-50'
-                      : 'bg-error hover:bg-error/90 text-white'
-                  }`}
-                  data-tooltip-id="stop-import-tooltip"
-                  data-tooltip-content="Stop user import"
-                  aria-label="Stop user import"
-                >
-                  <FiSquare className="mr-2" />
-                  Stop
-                </button>
-                <Tooltip id="stop-import-tooltip" />
-                <button 
-                  onClick={retryFailedImports}
-                  disabled={processing || failedUsers.length === 0 || connectionStatus !== 'connected'}
-                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                    processing || failedUsers.length === 0 || connectionStatus !== 'connected'
-                      ? 'bg-secondary cursor-not-allowed opacity-50'
-                      : 'bg-yellow-600 hover:bg-yellow-500 text-white'
-                  }`}
-                  data-tooltip-id="retry-import-tooltip"
-                  data-tooltip-content="Retry failed user imports"
-                  aria-label="Retry failed user imports"
-                >
-                  <FiPlay className="mr-2" />
-                  Retry Failed ({failedUsers.length})
-                </button>
-                <Tooltip id="retry-import-tooltip" />
-                <button 
-                  onClick={exportFailedUsers}
-                  disabled={failedUsers.length === 0}
-                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                    failedUsers.length === 0
-                      ? 'bg-secondary cursor-not-allowed opacity-50'
-                      : 'bg-orange-600 hover:bg-orange-500 text-white'
-                  }`}
-                  data-tooltip-id="export-failed-tooltip"
-                  data-tooltip-content="Export failed users to JSON"
-                  aria-label="Export failed users"
-                >
-                  <FiDownload className="mr-2" />
-                  Export Failed ({failedUsers.length})
-                </button>
-                <Tooltip id="export-failed-tooltip" />
-                <button 
-                  onClick={clearFailedUsers}
-                  disabled={failedUsers.length === 0}
-                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                    failedUsers.length === 0
-                      ? 'bg-secondary cursor-not-allowed opacity-50'
-                      : 'bg-red-600 hover:bg-red-500 text-white'
-                  }`}
-                  data-tooltip-id="clear-failed-tooltip"
-                  data-tooltip-content="Clear failed users list"
-                  aria-label="Clear failed users"
-                >
-                  <FiSquare className="mr-2" />
-                  Clear Failed ({failedUsers.length})
-                </button>
-                <Tooltip id="clear-failed-tooltip" />
-              </div>
+    {/* Preview Uploaded Users */}
+    {users.length > 0 && (
+      <ThemedCard>
+        <h3 className="text-lg font-semibold mb-4">Uploaded Users Preview ({users.length})</h3>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+            <thead className={theme === 'dark' ? 'bg-gray-900' : 'bg-gray-100'}>
+              <tr>
+                <th className="px-4 py-2 text-left text-sm font-medium">Username</th>
+                <th className="px-4 py-2 text-left text-sm font-medium">First Name</th>
+                <th className="px-4 py-2 text-left text-sm font-medium">Surname</th>
+                <th className="px-4 py-2 text-left text-sm font-medium">User Roles</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.slice(0, 10).map((user, index) => (
+                <tr key={index} className={
+                  index % 2 === 0 
+                    ? theme === 'dark' ? 'bg-gray-800' : 'bg-white'
+                    : theme === 'dark' ? 'bg-gray-900' : 'bg-gray-50'
+                }>
+                  <td className="px-4 py-2 text-sm">{user.username}</td>
+                  <td className="px-4 py-2 text-sm">{user.firstName}</td>
+                  <td className="px-4 py-2 text-sm">{user.surname}</td>
+                  <td className="px-4 py-2 text-sm">{user.userRoles?.map(r => r.id).join(', ')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {users.length > 10 && (
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">Showing first 10 users. Total: {users.length}</p>
+        )}
+      </ThemedCard>
+    )}
 
-              {processing && (
-                <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden dark:bg-gray-700 relative">
-                  <div 
-                    className="bg-primary h-4 transition-all duration-300 dark:bg-blue-400" 
-                    style={{ width: `${progress}%` }} 
-                    role="progressbar"
-                    aria-valuenow={progress}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                  />
-                  <span className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-white">
-                    {progress}%
+    <ThemedCard className="col-span-2">
+      <div className="flex flex-wrap gap-3">
+        <ThemedButton 
+          onClick={confirmImport} 
+          disabled={processing || users.length === 0 || connectionStatus !== 'connected'}
+          variant={processing || users.length === 0 || connectionStatus !== 'connected' ? 'disabled' : 'primary'}
+          data-tooltip-id="start-import-tooltip"
+          data-tooltip-content="Start importing users"
+        >
+          <FiPlay className="mr-2" />
+          Start Import
+        </ThemedButton>
+        <Tooltip id="start-import-tooltip" />
+        <ThemedButton 
+          onClick={stopProcessing} 
+          disabled={!processing}
+          variant={!processing ? 'disabled' : 'danger'}
+          data-tooltip-id="stop-import-tooltip"
+          data-tooltip-content="Stop user import"
+        >
+          <FiSquare className="mr-2" />
+          Stop
+        </ThemedButton>
+        <Tooltip id="stop-import-tooltip" />
+        <ThemedButton 
+          onClick={retryFailedImports}
+          disabled={processing || failedUsers.length === 0 || connectionStatus !== 'connected'}
+          variant={processing || failedUsers.length === 0 || connectionStatus !== 'connected' ? 'disabled' : 'warning'}
+          data-tooltip-id="retry-import-tooltip"
+          data-tooltip-content="Retry failed user imports"
+        >
+          <FiPlay className="mr-2" />
+          Retry Failed ({failedUsers.length})
+        </ThemedButton>
+        <Tooltip id="retry-import-tooltip" />
+        <ThemedButton 
+          onClick={exportFailedUsers}
+          disabled={failedUsers.length === 0}
+          variant={failedUsers.length === 0 ? 'disabled' : 'warning'}
+          data-tooltip-id="export-failed-tooltip"
+          data-tooltip-content="Export failed users to JSON"
+        >
+          <FiDownload className="mr-2" />
+          Export Failed ({failedUsers.length})
+        </ThemedButton>
+        <Tooltip id="export-failed-tooltip" />
+        <ThemedButton 
+          onClick={clearFailedUsers}
+          disabled={failedUsers.length === 0}
+          variant={failedUsers.length === 0 ? 'disabled' : 'danger'}
+          data-tooltip-id="clear-failed-tooltip"
+          data-tooltip-content="Clear failed users list"
+        >
+          <FiSquare className="mr-2" />
+          Clear Failed ({failedUsers.length})
+        </ThemedButton>
+        <Tooltip id="clear-failed-tooltip" />
+      </div>
+
+      {processing && <ProgressBar progress={progress} />}
+
+      {/* Import Statistics Dashboard */}
+      {(importStats.success > 0 || importStats.failed > 0) && (
+        <ThemedCard className="mt-6">
+          <h3 className="text-lg font-semibold mb-4">Import Statistics</h3>
+          <div className="w-full max-w-md mx-auto h-64">
+            <Pie
+              data={chartData}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: { position: 'top' },
+                  title: { display: true, text: 'Import Results' },
+                },
+              }}
+            />
+          </div>
+        </ThemedCard>
+      )}
+
+      {/* Activity Log */}
+      <ThemedCard className="mt-6">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">Activity Log</h3>
+          <ThemedButton 
+            onClick={clearLogs}
+            variant={log.length === 0 ? 'disabled' : 'danger'}
+            className="px-3 py-1"
+          >
+            <FiSquare className="mr-1" />
+            Clear Logs
+          </ThemedButton>
+        </div>
+        <div className={`h-60 overflow-y-auto p-3 rounded-lg ${
+          theme === 'dark' ? 'bg-gray-900' : 'bg-gray-100'
+        }`}>
+          {log.length === 0 ? (
+            <p className="text-center text-gray-500 dark:text-gray-400">
+              No activity yet
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {log.map((entry, i) => (
+                <div
+                  key={i}
+                  className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 rounded`}
+                >
+                  <span className="text-xs opacity-70 mr-2">[{entry.timestamp}]</span>
+                  <span>
+                    {entry.type === 'success' && '✅ '}
+                    {entry.type === 'error' && '❌ '}
+                    {entry.type === 'warning' && '⚠️ '}
+                    {entry.message}
                   </span>
                 </div>
-              )}
-
-              {/* Import Statistics Dashboard */}
-              {(importStats.success > 0 || importStats.failed > 0) && (
-                <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                  <h3 className="font-medium mb-3">Import Statistics</h3>
-                  <div className="w-full max-w-md mx-auto h-64 flex items-center justify-center">
-                    <Pie
-                      data={chartData}
-                      options={{
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                          legend: { position: 'top' },
-                          title: { display: true, text: 'Import Results' },
-                        },
-                      }}
-                      style={{ maxHeight: '100%', maxWidth: '100%' }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Activity Log */}
-              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <div className="flex justify-between items-center mb-2">
-                  <h3 className="font-medium">Activity Log</h3>
-                  <button 
-                    onClick={clearLogs}
-                    className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
-                      log.length === 0
-                        ? 'bg-secondary cursor-not-allowed opacity-50'
-                        : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
-                    } text-white`}
-                    data-tooltip-id="clear-logs-tooltip"
-                    data-tooltip-content="Clear all activity logs"
-                    aria-label="Clear activity logs"
-                    disabled={log.length === 0}
-                  >
-                    <FiSquare className="mr-1" />
-                    Clear Logs
-                  </button>
-                </div>
-                <div 
-                  className={`h-60 overflow-y-auto p-3 rounded ${
-                    theme === 'dark' ? 'bg-black' : 'bg-gray-200'
-                  }`} 
-                  role="log"
-                  aria-live="polite"
-                >
-                  {log.length === 0 ? (
-                    <p className={`text-center ${
-                      theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                    }`}>
-                      No activity yet
-                    </p>
-                  ) : (
-                    <div className="font-mono text-sm space-y-2">
-                      {log.map((entry, i) => (
-                        <div
-                          key={i}
-                          className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
-                            entry.type === 'error' ? 'border-error' :
-                            entry.type === 'warning' ? 'border-warning' :
-                            entry.type === 'success' ? 'border-success' : 'border-secondary'
-                          }`}
-                        >
-                          <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
-                          <span>
-                            {entry.type === 'success' && '✅ '}
-                            {entry.type === 'error' && '❌ '}
-                            {entry.type === 'warning' && '⚠️ '}
-                            {entry.message}
-                          </span>
-                        </div>
-                      ))}
-                      <div ref={logEndRef} />
-                    </div>
-                  )}
-                </div>
-              </div>
+              ))}
+              <div ref={logEndRef} />
             </div>
           )}
+        </div>
+      </ThemedCard>
+    </ThemedCard>
+  </div>
+)}
 
           {/* Export/Delete Tab */}
           {activeTab === 'export' && (
-            <div className="space-y-6">
-              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <h2 className="text-lg font-semibold mb-3">Export/Delete Users</h2>
-                <button 
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <ThemedCard>
+                <h2 className="text-xl font-semibold mb-4">Export/Delete Users</h2>
+                <ThemedButton 
                   onClick={exportUsersToCSV} 
                   disabled={processing}
-                  className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                    processing 
-                      ? 'bg-secondary cursor-not-allowed opacity-50'
-                      : 'bg-primary hover:bg-primary/90 text-white'
-                  }`}
+                  variant={processing ? 'disabled' : 'primary'}
                   data-tooltip-id="fetch-users-tooltip"
                   data-tooltip-content="Fetch users from DHIS2"
-                  aria-label="Fetch users from DHIS2"
                 >
                   <FiDownload className="mr-2" />
                   Fetch Users from DHIS2
-                </button>
+                </ThemedButton>
                 <Tooltip id="fetch-users-tooltip" />
-              </div>
+              </ThemedCard>
 
-              {processing && activeTab === 'export' && (
-                <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden dark:bg-gray-700 relative">
-                  <div 
-                    className="bg-primary h-4 transition-all duration-300 dark:bg-blue-400" 
-                    style={{ width: `${exportProgress}%` }} 
-                    role="progressbar"
-                    aria-valuenow={exportProgress}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                  />
-                  <span className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-white">
-                    {Math.round(exportProgress)}%
-                  </span>
-                </div>
-              )}
+              {processing && activeTab === 'export' && <ProgressBar progress={exportProgress} />}
 
               {exportedUsers.length > 0 && (
                 <>
-                  <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                  <ThemedCard>
                     <button
-                      className="md:hidden mb-4 px-4 py-2 bg-primary text-white rounded-lg transition-all duration-200 transform hover:scale-105"
+                      className="md:hidden mb-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all duration-200"
                       onClick={() => setIsFilterOpen(!isFilterOpen)}
                       data-tooltip-id="toggle-filters-tooltip"
                       data-tooltip-content={isFilterOpen ? 'Hide filters' : 'Show filters'}
-                      aria-label="Toggle filters"
                     >
                       {isFilterOpen ? 'Hide Filters' : 'Show Filters'}
                     </button>
                     <Tooltip id="toggle-filters-tooltip" />
                     <div className={`${isFilterOpen ? 'block' : 'hidden'} md:block`}>
-                      <h3 className="font-medium mb-3">Filter & Export</h3>
+                      <h3 className="text-lg font-semibold mb-4">Filter & Export</h3>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                         <div>
-                          <label className="block mb-1" htmlFor="username-filter">Username</label>
+                          <label className="block mb-2" htmlFor="username-filter">Username</label>
                           <input
                             id="username-filter"
                             type="text"
@@ -1390,16 +1344,15 @@ function App() {
                             value={usernameFilter}
                             onChange={(e) => setUsernameFilter(e.target.value)}
                             className={`w-full p-2 rounded border ${
-                              theme === 'dark' ? 'bg-gray-900 border-gray-600' : 'bg-white border-gray-300'
-                            }`}
-                            aria-label="Filter users by username"
+                              theme === 'dark' ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'
+                            } focus:outline-none focus:ring-2 focus:ring-blue-500`}
                           />
-                          <p className="mt-1 text-sm text-gray-500">
+                          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
                             {filteredUsers.length} users match your filters
                           </p>
                         </div>
                         <div>
-                          <label className="block mb-1" htmlFor="orgunit-filter">Organization Unit</label>
+                          <label className="block mb-2" htmlFor="orgunit-filter">Organization Unit</label>
                           <input
                             id="orgunit-filter"
                             type="text"
@@ -1407,9 +1360,8 @@ function App() {
                             value={orgUnitFilter}
                             onChange={(e) => setOrgUnitFilter(e.target.value)}
                             className={`w-full p-2 rounded border ${
-                              theme === 'dark' ? 'bg-gray-900 border-gray-600' : 'bg-white border-gray-300'
-                            }`}
-                            aria-label="Filter users by organization unit path"
+                              theme === 'dark' ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'
+                            } focus:outline-none focus:ring-2 focus:ring-blue-500`}
                           />
                         </div>
                       </div>
@@ -1424,7 +1376,6 @@ function App() {
                                 checked={selectedColumns.includes(col.id)}
                                 onChange={() => toggleColumn(col.id)}
                                 className="rounded"
-                                aria-label={`Toggle ${col.label} column`}
                               />
                               <span>{col.label}</span>
                             </label>
@@ -1438,98 +1389,80 @@ function App() {
                             setUsernameFilter('');
                             setOrgUnitFilter('');
                           }}
-                          className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                            theme === 'dark' ? 'bg-secondary hover:bg-secondary/90' : 'bg-gray-200 hover:bg-gray-300'
-                          }`}
+                          className={`px-4 py-2 rounded-lg ${
+                            theme === 'dark' ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'
+                          } transition-all duration-200`}
                           data-tooltip-id="clear-filters-tooltip"
                           data-tooltip-content="Clear all filters"
-                          aria-label="Clear filters"
                         >
                           Clear Filters
                         </button>
                         <Tooltip id="clear-filters-tooltip" />
-                        <button
+                        <ThemedButton
                           onClick={() => exportFilteredUsers('csv')}
-                          className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                            theme === 'dark' ? 'bg-success hover:bg-success/90' : 'bg-success hover:bg-success/90'
-                          } text-white`}
+                          variant="success"
                           data-tooltip-id="export-csv-tooltip"
                           data-tooltip-content="Export filtered users as CSV"
-                          aria-label="Export filtered users as CSV"
                         >
                           <FiDownload className="mr-2" />
                           Export as CSV
-                        </button>
+                        </ThemedButton>
                         <Tooltip id="export-csv-tooltip" />
-                        <button
+                        <ThemedButton
                           onClick={() => exportFilteredUsers('json')}
-                          className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                            theme === 'dark' ? 'bg-yellow-700 hover:bg-yellow-600' : 'bg-yellow-600 hover:bg-yellow-500'
-                          } text-white`}
+                          variant="warning"
                           data-tooltip-id="export-json-tooltip"
                           data-tooltip-content="Export filtered users as JSON"
-                          aria-label="Export filtered users as JSON"
                         >
                           <FiDownload className="mr-2" />
                           Export as JSON
-                        </button>
+                        </ThemedButton>
                         <Tooltip id="export-json-tooltip" />
-                        <button
+                        <ThemedButton
                           onClick={deleteSelectedUsers}
                           disabled={processing || selectedUsers.length === 0 || connectionStatus !== 'connected'}
-                          className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                            processing || selectedUsers.length === 0 || connectionStatus !== 'connected'
-                              ? 'bg-secondary cursor-not-allowed opacity-50'
-                              : 'bg-red-600 hover:bg-red-500 text-white'
-                          }`}
+                          variant={processing || selectedUsers.length === 0 || connectionStatus !== 'connected' ? 'disabled' : 'danger'}
                           data-tooltip-id="delete-users-tooltip"
                           data-tooltip-content="Delete selected users"
-                          aria-label="Delete selected users"
                         >
                           <FiTrash2 className="mr-2" />
                           Delete Selected ({selectedUsers.length})
-                        </button>
+                        </ThemedButton>
                         <Tooltip id="delete-users-tooltip" />
                       </div>
                     </div>
-                  </div>
+                  </ThemedCard>
 
-                  <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                    <h3 className="font-medium mb-3">User Data ({filteredUsers.length} users)</h3>
-                    <button
-                      onClick={selectAllUsers}
-                      className={`mb-4 px-4 py-2 rounded-lg transition-all duration-200 transform hover:scale-105 ${
-                        theme === 'dark' ? 'bg-gray-600 hover:bg-gray-500' : 'bg-gray-200 hover:bg-gray-300'
-                      }`}
-                      data-tooltip-id="select-all-tooltip"
-                      data-tooltip-content={selectedUsers.length === filteredUsers.length ? 'Deselect All' : 'Select All'}
-                      aria-label={selectedUsers.length === filteredUsers.length ? 'Deselect all users' : 'Select all users'}
-                    >
-                      {selectedUsers.length === filteredUsers.length ? 'Deselect All' : 'Select All'}
-                    </button>
-                    <Tooltip id="select-all-tooltip" />
+                  <ThemedCard className="col-span-2">
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-lg font-semibold">User Data ({filteredUsers.length} users)</h3>
+                      <button
+                        onClick={selectAllUsers}
+                        className={`px-4 py-2 rounded ${
+                          theme === 'dark' ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'
+                        } transition-all duration-200`}
+                        data-tooltip-id="select-all-tooltip"
+                        data-tooltip-content={selectedUsers.length === filteredUsers.length ? 'Deselect All' : 'Select All'}
+                      >
+                        {selectedUsers.length === filteredUsers.length ? 'Deselect All' : 'Select All'}
+                      </button>
+                    </div>
                     <div className="overflow-x-auto">
-                      <table className="table-auto min-w-full border border-gray-400 dark:border-gray-600">
-                        {/* Table Head */}
-                        <thead className={`${theme === 'dark' ? 'bg-gray-700 text-white' : 'bg-gray-300'}`}>
+                      <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                        <thead className={theme === 'dark' ? 'bg-gray-900' : 'bg-gray-100'}>
                           <tr>
-                            <th className="p-3 border border-gray-400 dark:border-gray-600 text-left text-sm font-semibold">
+                            <th className="px-4 py-2 text-left text-sm font-medium">
                               <input
                                 type="checkbox"
                                 checked={selectedUsers.length === filteredUsers.length && filteredUsers.length > 0}
                                 onChange={selectAllUsers}
                                 className="rounded"
-                                aria-label="Select all users"
                               />
                             </th>
                             {selectedColumns.map(col => (
                               <th
                                 key={col}
-                                className="p-3 border border-gray-400 dark:border-gray-600 text-left text-sm font-semibold whitespace-normal break-words"
-                                style={{
-                                  minWidth: col === 'OrgunitPath' ? '400px' : '200px',
-                                  maxWidth: col === 'OrgunitPath' ? '600px' : '300px',
-                                }}
+                                className="px-4 py-2 text-left text-sm font-medium cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800"
                                 onClick={() => sortTable(col)}
                               >
                                 {availableColumns.find(c => c.id === col)?.label}
@@ -1540,31 +1473,29 @@ function App() {
                             ))}
                           </tr>
                         </thead>
-
-                        {/* Table Body */}
                         <tbody>
                           {currentUsers.map((user, index) => (
                             <tr
                               key={index}
-                              className={`${index % 2 === 0 ? 'bg-white' : 'bg-gray-100'} dark:bg-gray-800`}
+                              className={
+                                index % 2 === 0 
+                                  ? theme === 'dark' ? 'bg-gray-800' : 'bg-white'
+                                  : theme === 'dark' ? 'bg-gray-900' : 'bg-gray-50'
+                              }
                             >
-                              <td className="p-3 border border-gray-400 dark:border-gray-600 text-sm align-top">
+                              <td className="px-4 py-2 text-sm">
                                 <input
                                   type="checkbox"
                                   checked={selectedUsers.some(u => u.id === user.id)}
                                   onChange={() => toggleUserSelection(user)}
                                   className="rounded"
-                                  aria-label={`Select user ${user.username}`}
                                 />
                               </td>
                               {selectedColumns.map(col => (
                                 <td
                                   key={`${index}-${col}`}
-                                  className="p-3 border border-gray-400 dark:border-gray-600 text-sm align-top whitespace-pre-wrap break-words"
-                                  style={{
-                                    minWidth: col === 'OrgunitPath' ? '400px' : '200px',
-                                    maxWidth: col === 'OrgunitPath' ? '800px' : '300px',
-                                  }}
+                                  className="px-4 py-2 text-sm break-words"
+                                  style={{ maxWidth: col === 'OrgunitPath' ? '400px' : '200px' }}
                                 >
                                   {String(user[col] ?? '')}
                                 </td>
@@ -1575,19 +1506,16 @@ function App() {
                       </table>
                     </div>
 
-                    {/* Pagination */}
                     {totalPages > 1 && (
                       <div className="mt-4 flex justify-between items-center">
                         <button
                           onClick={handlePrevPage}
                           disabled={currentPage === 1}
                           className={`px-4 py-2 rounded ${
-                            currentPage === 1
-                              ? 'opacity-50 cursor-not-allowed'
-                              : theme === 'dark'
-                                ? 'bg-gray-600 hover:bg-gray-500'
-                                : 'bg-gray-200 hover:bg-gray-300'
-                          }`}
+                            currentPage === 1 
+                              ? 'bg-gray-400 cursor-not-allowed' 
+                              : 'bg-blue-600 hover:bg-blue-700 text-white'
+                          } transition-all duration-200`}
                         >
                           Previous
                         </button>
@@ -1596,66 +1524,47 @@ function App() {
                           onClick={handleNextPage}
                           disabled={currentPage === totalPages}
                           className={`px-4 py-2 rounded ${
-                            currentPage === totalPages
-                              ? 'opacity-50 cursor-not-allowed'
-                              : theme === 'dark'
-                                ? 'bg-gray-600 hover:bg-gray-500'
-                                : 'bg-gray-200 hover:bg-gray-300'
-                          }`}
+                            currentPage === totalPages 
+                              ? 'bg-gray-400 cursor-not-allowed' 
+                              : 'bg-blue-600 hover:bg-blue-700 text-white'
+                          } transition-all duration-200`}
                         >
                           Next
                         </button>
                       </div>
                     )}
-                  </div>
+                  </ThemedCard>
                 </>
               )}
 
               {/* Activity Log */}
-              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <div className="flex justify-between items-center mb-2">
-                  <h3 className="font-medium">Activity Log</h3>
-                  <button 
+              <ThemedCard className="col-span-2">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-semibold">Activity Log</h3>
+                  <ThemedButton 
                     onClick={clearLogs}
-                    className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
-                      log.length === 0
-                        ? 'bg-secondary cursor-not-allowed opacity-50'
-                        : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
-                    } text-white`}
-                    data-tooltip-id="clear-logs-tooltip"
-                    data-tooltip-content="Clear all activity logs"
-                    aria-label="Clear activity logs"
-                    disabled={log.length === 0}
+                    variant={log.length === 0 ? 'disabled' : 'danger'}
+                    className="px-3 py-1"
                   >
                     <FiSquare className="mr-1" />
                     Clear Logs
-                  </button>
+                  </ThemedButton>
                 </div>
-                <div 
-                  className={`h-60 overflow-y-auto p-3 rounded ${
-                    theme === 'dark' ? 'bg-black' : 'bg-gray-200'
-                  }`} 
-                  role="log"
-                  aria-live="polite"
-                >
+                <div className={`h-60 overflow-y-auto p-3 rounded-lg ${
+                  theme === 'dark' ? 'bg-gray-900' : 'bg-gray-100'
+                }`}>
                   {log.length === 0 ? (
-                    <p className={`text-center ${
-                      theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                    }`}>
+                    <p className="text-center text-gray-500 dark:text-gray-400">
                       No activity yet
                     </p>
                   ) : (
-                    <div className="font-mono text-sm space-y-2">
+                    <div className="space-y-2">
                       {log.map((entry, i) => (
                         <div
                           key={i}
-                          className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
-                            entry.type === 'error' ? 'border-error' :
-                            entry.type === 'warning' ? 'border-warning' :
-                            entry.type === 'success' ? 'border-success' : 'border-secondary'
-                          }`}
+                          className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 rounded`}
                         >
-                          <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
+                          <span className="text-xs opacity-70 mr-2">[{entry.timestamp}]</span>
                           <span>
                             {entry.type === 'success' && '✅ '}
                             {entry.type === 'error' && '❌ '}
@@ -1668,182 +1577,153 @@ function App() {
                     </div>
                   )}
                 </div>
-              </div>
+              </ThemedCard>
             </div>
           )}
 
           {/* Password Management Tab */}
           {activeTab === 'passwords' && (
-            <div className="space-y-6">
-              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <h2 className="text-lg font-semibold mb-3">Password Management</h2>
-                <div className="flex flex-wrap gap-4">
-                  <div className="flex-1 min-w-[300px]">
-                    <label className="block mb-2 font-medium" htmlFor="password-file-upload">Upload Password CSV</label>
-                    <div className="text-sm text-gray-500 dark:text-gray-400 mb-1" id="password-file-upload-desc">
-                      Upload a CSV file with columns: username, new_password, user_role_ids.
-                    </div>
-                    <div
-                      className={`border rounded-lg p-4 cursor-pointer flex items-center ${
-                        theme === 'dark' ? 'border-gray-600 bg-gray-900 hover:bg-gray-800' : 'border-gray-300 bg-white hover:bg-gray-50'
-                      } transition-all duration-200`}
-                    >
-                      <FiUpload className="mr-2" />
-                      <span>{fileName || 'Choose File or Drag & Drop'}</span>
-                      <input 
-                        id="password-file-upload"
-                        type="file" 
-                        accept=".csv" 
-                        onChange={handlePasswordCsvImport} 
-                        disabled={processingPasswords}
-                        className="hidden" 
-                        aria-label="Upload password CSV file"
-                        aria-describedby="password-file-upload-desc"
-                      />
-                    </div>
-                    {passwordUsers.length > 0 && (
-                      <p className="mt-2 text-sm text-success">
-                        ✅ {passwordUsers.length} users loaded for password update
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div className="mt-4 flex space-x-2">
-                  <button 
-                    onClick={downloadSamplePasswordCsv}
-                    className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                      theme === 'dark' ? 'bg-yellow-700 hover:bg-yellow-600' : 'bg-yellow-600 hover:bg-yellow-500'
-                    } text-white`}
-                    data-tooltip-id="password-sample-tooltip"
-                    data-tooltip-content="Download password update sample CSV"
-                    aria-label="Download password update sample CSV"
-                  >
-                    <FiDownload className="mr-2" />
-                    Sample CSV
-                  </button>
-                  <Tooltip id="password-sample-tooltip" />
-                  <button 
-                    onClick={processPasswordUpdates}
-                    disabled={processingPasswords || passwordUsers.length === 0 || connectionStatus !== 'connected'}
-                    className={`px-4 py-2 rounded-lg flex items-center transition-all duration-200 transform hover:scale-105 ${
-                      processingPasswords || passwordUsers.length === 0 || connectionStatus !== 'connected'
-                        ? 'bg-secondary cursor-not-allowed opacity-50'
-                        : 'bg-primary hover:bg-primary/90 text-white'
-                    }`}
-                    data-tooltip-id="process-passwords-tooltip"
-                    data-tooltip-content="Process password updates"
-                    aria-label="Process password updates"
-                  >
-                    <FiPlay className="mr-2" />
-                    {processingPasswords ? 'Processing...' : 'Process Updates'}
-                  </button>
-                  <Tooltip id="process-passwords-tooltip" />
-                </div>
-              </div>
-
-              {processingPasswords && (
-                <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden dark:bg-gray-700 relative">
-                  <div 
-                    className="bg-primary h-4 transition-all duration-300 dark:bg-blue-400" 
-                    style={{ width: `${progress}%` }} 
-                    role="progressbar"
-                    aria-valuenow={progress}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                  />
-                  <span className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-white">
-                    {progress}%
-                  </span>
-                </div>
-              )}
-
-              {/* Activity Log */}
-              <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                <div className="flex justify-between items-center mb-2">
-                  <h3 className="font-medium">Activity Log</h3>
-                  <button 
-                    onClick={clearLogs}
-                    className={`px-3 py-1 rounded-lg flex items-center text-sm transition-all duration-200 transform hover:scale-105 ${
-                      log.length === 0
-                        ? 'bg-secondary cursor-not-allowed opacity-50'
-                        : theme === 'dark' ? 'bg-red-700 hover:bg-red-600' : 'bg-red-600 hover:bg-red-500'
-                    } text-white`}
-                    data-tooltip-id="clear-logs-tooltip"
-                    data-tooltip-content="Clear all activity logs"
-                    aria-label="Clear activity logs"
-                    disabled={log.length === 0}
-                  >
-                    <FiSquare className="mr-1" />
-                    Clear Logs
-                  </button>
-                </div>
-                <div 
-                  className={`h-60 overflow-y-auto p-3 rounded ${
-                    theme === 'dark' ? 'bg-black' : 'bg-gray-200'
-                  }`} 
-                  role="log"
-                  aria-live="polite"
-                >
-                  {log.length === 0 ? (
-                    <p className={`text-center ${
-                      theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                    }`}>
-                      No activity yet
-                    </p>
-                  ) : (
-                    <div className="font-mono text-sm space-y-2">
-                      {log.map((entry, i) => (
-                        <div
-                          key={i}
-                          className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 ${
-                            entry.type === 'error' ? 'border-error' :
-                            entry.type === 'warning' ? 'border-warning' :
-                            entry.type === 'success' ? 'border-success' : 'border-secondary'
-                          }`}
-                        >
-                          <span className="opacity-70 mr-2">[{entry.timestamp}]</span>
-                          <span>
-                            {entry.type === 'success' && '✅ '}
-                            {entry.type === 'error' && '❌ '}
-                            {entry.type === 'warning' && '⚠️ '}
-                            {entry.message}
-                          </span>
-                        </div>
-                      ))}
-                      <div ref={logEndRef} />
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <ThemedCard>
+      <h2 className="text-xl font-semibold mb-4">Password Management</h2>
+      <div className="space-y-4">
+        <div>
+          <label className="block mb-2 font-medium" htmlFor="password-file-upload">
+            Upload Password CSV
+          </label>
+          <div className="text-sm text-gray-500 dark:text-gray-400 mb-2" id="password-file-upload-desc">
+            Upload a CSV file with columns: username, new_password, user_role_ids.
+          </div>
+          <div
+            onClick={() => document.getElementById('password-file-upload').click()}
+            className={`border-2 rounded-lg p-6 text-center cursor-pointer ${
+              theme === 'dark' 
+                ? 'border-gray-700 bg-gray-900 hover:bg-gray-800' 
+                : 'border-gray-300 bg-white hover:bg-gray-50'
+            } transition-all duration-200`}
+          >
+            <FiUpload className="mx-auto mb-2 text-2xl" />
+            <span>{fileName || 'Choose File or Drag & Drop'}</span>
+            <input 
+              id="password-file-upload"
+              type="file" 
+              accept=".csv" 
+              onChange={handlePasswordCsvImport} 
+              disabled={processingPasswords}
+              className="hidden" 
+              aria-label="Upload password CSV file"
+              aria-describedby="password-file-upload-desc"
+            />
+          </div>
+          {passwordUsers.length > 0 && (
+            <p className="mt-2 text-sm text-green-600 dark:text-green-400">
+              ✅ {passwordUsers.length} users loaded for password update
+            </p>
           )}
+        </div>
+
+        <div className="flex flex-wrap gap-3">
+          <ThemedButton 
+            onClick={downloadSamplePasswordCsv}
+            variant="warning"
+            data-tooltip-id="password-sample-tooltip"
+            data-tooltip-content="Download password update sample CSV"
+          >
+            <FiDownload className="mr-2" />
+            Sample CSV
+          </ThemedButton>
+          <Tooltip id="password-sample-tooltip" />
+          <ThemedButton 
+            onClick={processPasswordUpdates}
+            disabled={processingPasswords || passwordUsers.length === 0 || connectionStatus !== 'connected'}
+            variant={processingPasswords || passwordUsers.length === 0 || connectionStatus !== 'connected' ? 'disabled' : 'primary'}
+            data-tooltip-id="process-passwords-tooltip"
+            data-tooltip-content="Process password updates"
+          >
+            <FiPlay className="mr-2" />
+            {processingPasswords ? 'Processing...' : 'Process Updates'}
+          </ThemedButton>
+          <Tooltip id="process-passwords-tooltip" />
+        </div>
+      </div>
+    </ThemedCard>
+
+    {processingPasswords && <ProgressBar progress={progress} />}
+
+    {/* Activity Log */}
+    <ThemedCard className="col-span-2">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-semibold">Activity Log</h3>
+        <ThemedButton 
+          onClick={clearLogs}
+          variant={log.length === 0 ? 'disabled' : 'danger'}
+          className="px-3 py-1"
+        >
+          <FiSquare className="mr-1" />
+          Clear Logs
+        </ThemedButton>
+      </div>
+      <div className={`h-60 overflow-y-auto p-3 rounded-lg ${
+        theme === 'dark' ? 'bg-gray-900' : 'bg-gray-100'
+      }`}>
+        {log.length === 0 ? (
+          <p className="text-center text-gray-500 dark:text-gray-400">
+            No activity yet
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {log.map((entry, i) => (
+              <div
+                key={i}
+                className={`flex items-center ${getLogColor(entry.type)} border-l-4 pl-3 py-1 rounded`}
+              >
+                <span className="text-xs opacity-70 mr-2">[{entry.timestamp}]</span>
+                <span>
+                  {entry.type === 'success' && '✅ '}
+                  {entry.type === 'error' && '❌ '}
+                  {entry.type === 'warning' && '⚠️ '}
+                  {entry.message}
+                </span>
+              </div>
+            ))}
+            <div ref={logEndRef} />
+          </div>
+        )}
+      </div>
+    </ThemedCard>
+  </div>
+)}
 
           {/* Help Modal */}
           {showHelp && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" role="dialog" aria-labelledby="help-title">
-              <div className={`p-6 rounded-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
-                <h2 id="help-title" className="text-lg font-bold mb-4">Help</h2>
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <ThemedCard className="p-6 max-w-2xl">
+                <h2 className="text-xl font-bold mb-4">Help</h2>
                 <p className="mb-4">
                   The DHIS2 User Manager allows you to import, export, and delete user data in JSON or CSV formats.
                   Upload a file to import users, retry failed imports, or fetch and filter users from the DHIS2 server for export or deletion.
-                For more details, visit the <a href="https://docs.dhis2.org" className="text-blue-600 hover:underline">DHIS2 documentation</a>.
+                  For more details, visit the <a href="https://docs.dhis2.org" className="text-blue-600 hover:underline">DHIS2 documentation</a>.
                 </p>
-                <button 
+                <ThemedButton 
                   onClick={() => setShowHelp(false)}
-                  className={`px-4 py-2 rounded transition-all duration-200 transform hover:scale-105 ${
-                    theme === 'dark' ? 'bg-blue-700 hover:bg-blue-600' : 'bg-blue-600 hover:bg-blue-500'
-                  } text-white`}
-                  aria-label="Close help modal"
+                  variant="primary"
                 >
                   Close
-                </button>
-              </div>
+                </ThemedButton>
+              </ThemedCard>
             </div>
           )}
-        </div>
+        </main>
       </div>
     </div>
   );
 }
 
-export default App;
+// Wrap App with ThemeProvider
+export default function RootApp() {
+  return (
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>
+  );
+}
