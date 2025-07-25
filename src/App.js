@@ -1718,6 +1718,9 @@ function App() {
             </div>
           )}
         </main>
+        <footer className={`mt-12 text-center text-sm py-4 border-t ${theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}>
+          © 2025 Joseph Nongu. All rights reserved.
+        </footer>
       </div>
     </div>
   );
