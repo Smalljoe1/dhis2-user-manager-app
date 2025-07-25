@@ -1,4 +1,7 @@
+
 # DHIS2 User Manager App
+
+**Owner:** Joseph Nongu
 
 A React-based application for managing user data in the DHIS2 system, allowing import/export of users via JSON or CSV files, with filtering, sorting, and batch processing capabilities.
 
