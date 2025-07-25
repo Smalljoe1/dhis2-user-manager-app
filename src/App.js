@@ -1,3 +1,7 @@
+// DHIS2 User Manager App
+// Author: Joseph Nongu
+// (c) 2025 Joseph Nongu
+
 import React, { useState, useRef, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
 import axios from 'axios';
 import { FiUpload, FiDownload, FiPlay, FiSquare, FiSun, FiMoon, FiHelpCircle, FiUsers, FiTrash2, FiLock } from 'react-icons/fi';
@@ -177,7 +181,7 @@ function App() {
   const logEndRef = useRef(null);
   const prevStatus = useRef('checking...');
 
-  const usersPerPage = 100;
+  const usersPerPage = 10;
   const availableColumns = [
     { id: 'id', label: 'ID' },
     { id: 'name', label: 'Name' },
@@ -744,7 +748,7 @@ function App() {
     try {
       let seenIds = new Set();
       let usersList = [];
-      let nextUrl = `${BASE_URL}/users.json?fields=id,name,username,userGroups[name],userRoles[name],lastLogin,organisationUnits[ancestors[name],name,id]&paging=true&pageSize=5000`;
+      let nextUrl = `${BASE_URL}/users.json?fields=id,name,username,userGroups[name],userRoles[name],lastLogin,organisationUnits[ancestors[name],name,id]&paging=true&pageSize=10000`;
       let pageCount = 0;
 
       while (nextUrl) {
