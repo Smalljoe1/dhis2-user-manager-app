@@ -1719,7 +1719,7 @@ function App() {
           )}
         </main>
         <footer className={`mt-12 text-center text-sm py-4 border-t ${theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}>
-          © 2025 Joseph Nongu. All rights reserved.
+          © 2025 <a href="https://nongu.com.ng/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Joseph Nongu</a>. All rights reserved.
         </footer>
       </div>
     </div>
